@@ -20,23 +20,9 @@ is work. It listens to your calls, reads what you work on, and turns both into n
 search, read, or hand to an AI assistant. It runs fully offline: no accounts, no subscription,
 no usage limits, no cloud.
 
-## Disclaimer: read this first
-
-> **Never record people without their consent.** Recording conversations is regulated, and the
-> rules depend on where you and the other participants are. Many places require the consent of
-> **everyone** in a conversation (for example Germany, most of the EU under GDPR, California and
-> several other US states). Workplace recording and screen monitoring can be subject to further
-> rules, works council agreements or company policy.
->
-> - Tell participants that you record and transcribe, and get their agreement **before** you start.
-> - Do not record calls where you cannot get consent. Use **Ignore** or turn auto-recording off.
-> - Screen activity can contain other people's messages and personal data. Treat the files
->   accordingly and delete what you do not need.
->
-> **Use at your own risk.** merkwerk is provided "as is", without warranty of any kind (see
-> [LICENSE](LICENSE)). You alone are responsible for how you use it and for complying with the
-> laws and agreements that apply to you. The authors accept no liability for recordings made
-> with it or for their consequences.
+> [!IMPORTANT]
+> Only record people who agreed to it, and use merkwerk at your own risk. Read the
+> [disclaimer](#disclaimer) before your first recording.
 
 ## Your data stays on your machine
 
@@ -269,3 +255,21 @@ Face, and they keep their own licenses:
 The default notes model, Gemma 4 by Google, is installed through Ollama and licensed under
 Apache-2.0. Product names mentioned in this README belong to their owners; merkwerk is not
 affiliated with any of them.
+
+## Disclaimer
+
+> **Never record people without their consent.** Recording conversations is regulated, and the
+> rules depend on where you and the other participants are. Many places require the consent of
+> **everyone** in a conversation (for example Germany, most of the EU under GDPR, California and
+> several other US states). Workplace recording and screen monitoring can be subject to further
+> rules, works council agreements or company policy.
+>
+> - Tell participants that you record and transcribe, and get their agreement **before** you start.
+> - Do not record calls where you cannot get consent. Use **Ignore** or turn auto-recording off.
+> - Screen activity can contain other people's messages and personal data. Treat the files
+>   accordingly and delete what you do not need.
+>
+> **Use at your own risk.** merkwerk is provided "as is", without warranty of any kind (see
+> [LICENSE](LICENSE)). You alone are responsible for how you use it and for complying with the
+> laws and agreements that apply to you. The authors accept no liability for recordings made
+> with it or for their consequences.
