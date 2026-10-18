@@ -1,0 +1,226 @@
+//! The notes page: one self-contained HTML document (no network, no external assets)
+//! with every meeting's notes and transcript embedded as JSON.
+
+use crate::{
+    activity,
+    config::Config,
+    store::{Meta, Store},
+};
+use chrono::{DateTime, FixedOffset, Local};
+use pulldown_cmark::{Event, Parser, html};
+use serde_json::{Value, json};
+
+const TEMPLATE: &str = include_str!("notes.html");
+
+/// Cheap change detector for the page data: sizes and modification times of the files it is
+/// built from (one `stat` each, no reads).
+pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut add = |path: &std::path::Path| {
+        if let Ok(md) = std::fs::metadata(path) {
+            path.hash(&mut h);
+            md.len().hash(&mut h);
+            md.modified().ok().hash(&mut h);
+        }
+    };
+    for dir in std::fs::read_dir(&store.root).into_iter().flatten().flatten() {
+        for file in ["meta.json", "summary.md", "transcript.jsonl", "me.wav"] {
+            add(&dir.path().join(file));
+        }
+    }
+    for f in std::fs::read_dir(activity::dir(&cfg.root))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = f.path();
+        // Activity of a day only shows once it has a work log.
+        if path.extension().is_some_and(|x| x == "md") {
+            add(&path);
+            add(&path.with_extension("jsonl"));
+        }
+    }
+    // "Today" and "Yesterday" labels change at midnight.
+    Local::now().date_naive().hash(&mut h);
+    h.finish()
+}
+
+/// The full page around `data` (from [`data`]).
+pub fn page(data: &str) -> String {
+    TEMPLATE.replace("/*DATA*/", data)
+}
+
+/// All meetings as JSON, safe to embed in a `<script>` tag.
+// Limitation: rereads every meeting; cache per file mtime if the archive grows to thousands.
+pub fn data(cfg: &Config, store: &Store) -> String {
+    let today = Local::now().date_naive();
+    let mut meetings: Vec<Value> = store.list().iter().map(|m| meeting(store, m, today)).collect();
+    meetings.extend(work_logs(cfg, today));
+    // Newest first; a day's work log (`<date>_log`) sorts above that day's meetings.
+    meetings.sort_by(|a, b| b["id"].as_str().cmp(&a["id"].as_str()));
+    // `<` never occurs outside JSON strings, so escaping it keeps `</script>` in content harmless.
+    Value::Array(meetings).to_string().replace('<', "\\u003c")
+}
+
+fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
+    let parse = |s: &str| DateTime::parse_from_rfc3339(s).ok();
+    let start = parse(&m.started_at);
+    let end = m.ended_at.as_deref().and_then(parse);
+    let summary = store.read(&m.id, "summary.md").unwrap_or_default();
+    let segments = store.segments(&m.id);
+    let lines: Vec<Value> = segments
+        .iter()
+        .map(|s| {
+            let t = s.start as u64;
+            json!({"at": format!("{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60), "who": s.source.label(), "text": s.text})
+        })
+        .collect();
+    let search = format!(
+        "{} {} {}",
+        m.title,
+        summary,
+        segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ")
+    )
+    .to_lowercase();
+    json!({
+        "id": m.id,
+        "title": m.title,
+        "day": start.map(|s| day_label(s, today)).unwrap_or_default(),
+        "date": start.map(|s| s.format("%A, %b %-d").to_string()),
+        "time": start.map(|s| s.format("%H:%M").to_string()),
+        "span": match (start, end) {
+            (Some(a), Some(b)) => Some(format!("{} to {}", a.format("%H:%M"), b.format("%H:%M"))),
+            _ => None,
+        },
+        "length": match (start, end) {
+            (Some(a), Some(b)) => format!("{} min", (b - a).num_minutes().max(1)),
+            _ => String::new(),
+        },
+        "app": m.app.as_deref().map(app_name),
+        "live": m.ended_at.is_none() && recently_written(store, m),
+        "notes": (!summary.trim().is_empty()).then(|| render(&summary)),
+        "lines": lines,
+        "search": search,
+    })
+}
+
+/// One entry per day with a work log; its raw view lists the window sessions.
+fn work_logs(cfg: &Config, today: chrono::NaiveDate) -> Vec<Value> {
+    let Ok(dir) = std::fs::read_dir(activity::dir(&cfg.root)) else {
+        return vec![];
+    };
+    let mut out = vec![];
+    for path in dir.flatten().map(|e| e.path()) {
+        if path.extension().is_none_or(|x| x != "md") {
+            continue;
+        }
+        let Some(day) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse::<chrono::NaiveDate>().ok())
+        else {
+            continue;
+        };
+        let log = std::fs::read_to_string(&path).unwrap_or_default();
+        let sessions = activity::visible_sessions(activity::sessions(&activity::entries(cfg, day)), 30);
+        let lines: Vec<Value> = sessions
+            .iter()
+            .map(|s| {
+                json!({
+                    "at": s.start.format("%H:%M").to_string(),
+                    "who": s.app,
+                    "text": format!("{} ({} min)", s.window, (s.end - s.start).num_minutes().max(1)),
+                })
+            })
+            .collect();
+        let start = sessions.first().map(|s| s.start.format("%H:%M").to_string());
+        let end = sessions.last().map(|s| s.end.format("%H:%M").to_string());
+        out.push(json!({
+            "id": format!("{day}_log"),
+            "kind": "log",
+            "title": "Work log",
+            "day": day_label_naive(day, today),
+            "date": day.format("%A, %b %-d").to_string(),
+            "time": start.clone().unwrap_or_default(),
+            "span": start.zip(end).map(|(a, b)| format!("{a} to {b}")),
+            "length": format!("{} sessions", lines.len()),
+            "app": null,
+            "live": false,
+            "notes": render(&log),
+            "lines": lines,
+            "search": log.to_lowercase(),
+        }));
+    }
+    out
+}
+
+fn day_label_naive(d: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
+    match (today - d).num_days() {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        _ => d.format("%A, %b %-d").to_string(),
+    }
+}
+
+fn day_label(start: DateTime<FixedOffset>, today: chrono::NaiveDate) -> String {
+    day_label_naive(start.with_timezone(&Local).date_naive(), today)
+}
+
+/// No end time and audio written in the last seconds; a crashed recording has no end time either.
+fn recently_written(store: &Store, m: &Meta) -> bool {
+    let wav = store.wav_path(&m.id, crate::audio::Source::Me);
+    std::fs::metadata(wav)
+        .and_then(|md| md.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|e| e.as_secs() < 15))
+}
+
+/// "Vivaldi Helper" -> "Vivaldi", "zoom.us" stays.
+fn app_name(app: &str) -> String {
+    app.split(" Helper").next().unwrap_or(app).to_string()
+}
+
+/// Markdown to HTML without the leading `# title` (shown as the page title) and with any raw
+/// HTML in the notes escaped: notes come from an LLM reading meeting audio, so treat as untrusted.
+fn render(summary: &str) -> String {
+    let body = match summary.trim_start().strip_prefix("# ") {
+        Some(rest) => rest.split_once('\n').map_or("", |(_, b)| b),
+        None => summary,
+    };
+    markdown(body)
+}
+
+/// Markdown to HTML with raw HTML escaped (LLM output is untrusted).
+pub fn markdown(body: &str) -> String {
+    let events = Parser::new(body).map(|e| match e {
+        Event::Html(s) | Event::InlineHtml(s) => Event::Text(s),
+        e => e,
+    });
+    let mut out = String::new();
+    html::push_html(&mut out, events);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_drops_title_and_escapes_html() {
+        let out = render("# Title\n\n# Topic\n- a <script>x</script>\n");
+        assert!(!out.contains("Title"));
+        assert!(out.contains("<h1>Topic</h1>"));
+        assert!(!out.contains("<script>"));
+    }
+}
+
+#[cfg(test)]
+mod preview {
+    #[test]
+    #[ignore = "writes a preview page for screenshots"]
+    fn write_preview() {
+        let cfg = crate::config::Config::from_env();
+        let store = crate::store::Store { root: cfg.root.clone() };
+        std::fs::write(std::env::var("OUT").unwrap(), super::page(&super::data(&cfg, &store))).unwrap();
+    }
+}

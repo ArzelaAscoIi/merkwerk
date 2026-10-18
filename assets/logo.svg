@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e2120"/><stop offset="1" stop-color="#0e100f"/></linearGradient>
+<linearGradient id="green" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5fd6aa"/><stop offset="1" stop-color="#2a9d78"/></linearGradient>
+<linearGradient id="gem" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b8f5dc"/><stop offset="1" stop-color="#3cc497"/></linearGradient>
+</defs>
+<rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+<line x1="236" y1="512" x2="788" y2="512" stroke="#3b403e" stroke-width="8" stroke-linecap="round"/>
+<path d="M 282 474 L 397 286 L 512 420 L 627 286 L 742 474" fill="none" stroke="#ececee" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 282 550 L 397 738 L 512 604 L 627 738 L 742 550" fill="none" stroke="url(#green)" stroke-width="58" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+<path d="M 512 676 L 548 712 L 512 760 L 476 712 Z" fill="url(#gem)"/>
+</svg>

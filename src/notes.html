@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>merkwerk</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --side: #f3f3f1;
+    --text: #1c1c1e;
+    --muted: #6e6e73;
+    --faint: #a1a1a6;
+    --line: #e5e5e2;
+    --hover: #eaeae7;
+    --select: #e2e7e4;
+    --accent: #0f7a5c;
+    --rec: #c8372d;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121213;
+      --side: #19191b;
+      --text: #ececee;
+      --muted: #9a9aa0;
+      --faint: #66666c;
+      --line: #2a2a2d;
+      --hover: #222225;
+      --select: #1f2a25;
+      --accent: #3cc497;
+      --rec: #ef6b5f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    display: grid; grid-template-columns: 300px 1fr;
+  }
+  @media (max-width: 720px) { body { grid-template-columns: 1fr; } aside { display: none; } }
+
+  /* sidebar */
+  aside {
+    background: var(--side); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0; height: 100dvh;
+  }
+  .search { padding: 18px 14px 10px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  input[type=search] {
+    width: 100%; font: inherit; color: var(--text);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 10px; outline: none;
+  }
+  input[type=search]::placeholder { color: var(--muted); }
+  input[type=search]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  nav { overflow-y: auto; padding: 4px 8px 24px; flex: 1; }
+  .day { color: var(--muted); font-size: 12px; font-weight: 500; padding: 16px 8px 6px; }
+  .row {
+    display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit;
+    font: inherit; padding: 8px 10px; border-radius: 8px; cursor: default;
+  }
+  .row:hover { background: var(--hover); }
+  .row[aria-current=true] { background: var(--select); }
+  .row .t { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .m { display: block; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .row .m.live { color: var(--rec); }
+  .parts > span + span { margin-left: 10px; }
+  .meta.parts > span + span { margin-left: 14px; }
+  .none { color: var(--muted); padding: 24px 10px; font-size: 13px; }
+
+  /* main */
+  main { overflow-y: auto; height: 100dvh; }
+  .wrap { max-width: 760px; padding: 40px 48px 96px; }
+  @media (max-width: 720px) { .wrap { padding: 24px 16px 64px; } }
+  header { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
+  h1.title { font-size: 26px; line-height: 1.2; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 6px; }
+  .meta { display: block; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .rec { color: var(--rec); font-weight: 500; }
+  .rec::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--rec); margin-right: 6px; vertical-align: 1px; }
+
+  .seg { display: inline-grid; grid-auto-flow: column; background: var(--side); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+  .seg button {
+    font: inherit; font-size: 13px; color: var(--muted); background: none; border: 0;
+    padding: 4px 12px; border-radius: 6px; cursor: default;
+  }
+  .seg button[aria-pressed=true] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 12%, transparent); }
+  .seg button:active { transform: scale(0.98); }
+
+  .body { margin-top: 32px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .body.anim { animation: in 160ms cubic-bezier(0.16, 1, 0.3, 1); }
+    @keyframes in { from { opacity: 0; transform: translateY(4px); } }
+  }
+
+  /* notes */
+  .notes { font-size: 15px; line-height: 1.65; max-width: 68ch; }
+  .notes h1, .notes h2, .notes h3 { font-size: 16px; font-weight: 600; letter-spacing: -0.005em; margin: 32px 0 8px; }
+  .notes > :first-child { margin-top: 0; }
+  .notes p { margin: 0 0 12px; }
+  .notes ul, .notes ol { margin: 0 0 12px; padding-left: 20px; }
+  .notes li { margin: 3px 0; }
+  .notes li::marker { color: var(--faint); }
+  .notes li > ul { margin: 2px 0 4px; }
+  .notes strong { font-weight: 600; }
+  .notes code { font: 13px var(--mono); background: var(--side); padding: 1px 5px; border-radius: 4px; }
+  .notes .next li { margin: 0 0 14px; }
+  .notes .next li p { margin: 2px 0 0; color: var(--muted); }
+  .notes .next li p:first-child { margin: 0; color: var(--text); }
+
+  /* transcript */
+  .tx { display: grid; grid-template-columns: 64px minmax(56px, max-content) 1fr; column-gap: 12px; row-gap: 10px; font-size: 14px; line-height: 1.55; }
+  .tx .ts { font: 12px/1.9 var(--mono); color: var(--faint); }
+  .tx .sp { font-size: 13px; line-height: 1.75; color: var(--muted); font-weight: 500; }
+  .tx .sp.me { color: var(--accent); }
+  .tx .gap { grid-column: 1 / -1; height: 6px; }
+
+  /* chat */
+  .chat { margin-top: 48px; max-width: 68ch; border-top: 1px solid var(--line); padding-top: 24px; }
+  .chat .q { margin: 18px 0 6px; font-weight: 600; }
+  .chat .a { font-size: 15px; line-height: 1.6; }
+  .chat .a p { margin: 0 0 10px; }
+  .chat .a ul, .chat .a ol { margin: 0 0 10px; padding-left: 20px; }
+  .chat .a.pending { color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .chips button {
+    font: inherit; font-size: 13px; color: var(--text); background: var(--side);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; cursor: default;
+  }
+  .chips button:hover { border-color: var(--accent); }
+  .ask { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 16px; }
+  .ask textarea {
+    font: inherit; color: var(--text); background: var(--bg); resize: none; height: 40px;
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; outline: none;
+  }
+  .ask textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .ask button {
+    font: inherit; font-size: 14px; color: #fff; background: var(--accent); border: 0;
+    border-radius: 8px; padding: 0 16px; cursor: default;
+  }
+  .ask button:disabled { opacity: 0.5; }
+  .empty { color: var(--muted); max-width: 52ch; font-size: 14px; }
+  .empty code { font: 12px var(--mono); background: var(--side); padding: 1px 5px; border-radius: 4px; }
+  kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .keys { color: var(--faint); font-size: 12px; margin-top: 56px; }
+</style>
+</head>
+<body>
+<aside>
+  <div class="search">
+    <label class="sr" for="q">Search meetings</label>
+    <input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false">
+  </div>
+  <nav id="list"></nav>
+</aside>
+<main><div class="wrap" id="view"></div></main>
+
+<script id="data" type="application/json">/*DATA*/</script>
+<script>
+let meetings = JSON.parse(document.getElementById("data").textContent);
+const list = document.getElementById("list");
+const view = document.getElementById("view");
+const q = document.getElementById("q");
+let current = meetings[0]?.id;
+// Chats per meeting or day, kept while the window is open: [{q, a (html), text, pending}].
+const chats = {};
+let askId = 0;
+let mode = "notes";
+
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+
+function visible() {
+  const term = q.value.trim().toLowerCase();
+  if (!term) return meetings;
+  return meetings.filter(m => m.search.includes(term));
+}
+
+function renderList() {
+  list.replaceChildren();
+  const items = visible();
+  if (!items.length) {
+    list.append(el("div", "none", meetings.length ? "No meetings match." : "No meetings yet."));
+    return;
+  }
+  let day = null;
+  for (const m of items) {
+    if (m.day !== day) { day = m.day; list.append(el("div", "day", day)); }
+    const b = el("button", "row");
+    b.dataset.id = m.id;
+    b.setAttribute("aria-current", m.id === current);
+    b.append(el("span", "t", m.title));
+    b.append(parts(m.live ? "m live parts" : "m parts", [m.time, m.live ? "Recording" : m.length]));
+    b.onclick = () => select(m.id);
+    list.append(b);
+  }
+}
+
+// Inline pieces separated by space, not punctuation.
+function parts(cls, texts) {
+  const e = el("span", cls);
+  for (const t of texts.filter(Boolean)) e.append(el("span", null, t));
+  return e;
+}
+
+function select(id) {
+  current = id;
+  history.replaceState(null, "", "#" + id + (mode === "transcript" ? "/transcript" : ""));
+  renderList();
+  renderView();
+  list.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ block: "nearest" });
+}
+
+function renderView(animate = true) {
+  const typing = document.getElementById("ask-input");
+  const draft = typing?.value ?? "";
+  const focused = document.activeElement === typing;
+  view.replaceChildren();
+  const m = meetings.find(x => x.id === current);
+  if (!m) {
+    const e = el("div", "empty");
+    e.innerHTML = "Calls are recorded as soon as another app uses the microphone. " +
+      "For a conversation in person, choose <b>Start recording</b> in the menu bar.";
+    view.append(el("h1", "title", "No meetings yet"), e);
+    return;
+  }
+
+  const head = el("header");
+  const left = el("div");
+  left.append(el("h1", "title", m.title));
+  const meta = parts("meta parts", [m.date, m.span, m.app]);
+  if (m.live) meta.prepend(el("span", "rec", "Recording"));
+  left.append(meta);
+
+  const seg = el("div", "seg");
+  seg.setAttribute("role", "group");
+  seg.setAttribute("aria-label", "View");
+  const raw = m.kind === "log" ? "Activity" : "Transcript";
+  for (const [key, label] of [["notes", "Notes"], ["transcript", raw]]) {
+    const b = el("button", null, label);
+    b.setAttribute("aria-pressed", mode === key);
+    b.onclick = () => { mode = key; select(current); };
+    seg.append(b);
+  }
+  head.append(left, seg);
+  view.append(head);
+
+  const body = el("div", animate ? "body anim" : "body");
+  if (mode === "notes") {
+    if (m.notes) {
+      const n = el("div", "notes");
+      n.innerHTML = m.notes; // sanitized markdown rendered in Rust (raw HTML stripped)
+      markNextSteps(n);
+      body.append(n);
+    } else {
+      body.append(emptyNotes(m));
+    }
+  } else {
+    body.append(transcript(m));
+  }
+  view.append(body);
+  view.append(chat(m));
+  view.append(keys());
+  const input = document.getElementById("ask-input");
+  if (input) {
+    input.value = draft;
+    if (focused) input.focus();
+  }
+}
+
+function chat(m) {
+  const box = el("section", "chat");
+  box.setAttribute("aria-label", "Ask");
+  const thread = chats[m.id] ?? [];
+  for (const turn of thread) {
+    box.append(el("div", "q", turn.q));
+    const a = el("div", turn.pending ? "a pending" : "a");
+    if (turn.pending) a.textContent = "Thinking...";
+    else a.innerHTML = turn.a; // escaped Markdown rendered in Rust
+    box.append(a);
+  }
+  if (!thread.length) {
+    const chips = el("div", "chips");
+    const asks = m.kind === "log"
+      ? ["What did I work on?", "What is still open?", "Where did my time go?"]
+      : m.live
+        ? ["What did I miss?", "Summarize the last 5 minutes", "What was decided so far?"]
+        : ["What did I miss?", "My action items", "What was decided?"];
+    for (const text of asks) {
+      const b = el("button", null, text);
+      b.onclick = () => send(m.id, text);
+      chips.append(b);
+    }
+    box.append(chips);
+  }
+  const form = el("form", "ask");
+  const label = el("label", "sr", m.kind === "log" ? "Ask about this day" : "Ask about this meeting");
+  const input = el("textarea");
+  input.id = "ask-input";
+  input.placeholder = m.kind === "log" ? "Ask about this day" : "Ask about this meeting";
+  label.htmlFor = input.id;
+  const go = el("button", null, "Ask");
+  go.type = "submit";
+  go.disabled = thread.some(t => t.pending);
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+  });
+  form.onsubmit = e => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (text && !go.disabled) { input.value = ""; send(m.id, text); }
+  };
+  form.append(label, input, go);
+  box.append(form);
+  return box;
+}
+
+function send(target, question) {
+  const thread = (chats[target] ??= []);
+  if (!window.webkit?.messageHandlers?.merkwerk) {
+    thread.push({ q: question, a: "Chat works in the merkwerk window.", pending: false });
+    return renderView(false);
+  }
+  const id = ++askId;
+  const history = thread.filter(t => !t.pending && t.text).map(t => [t.q, t.text]);
+  thread.push({ id, q: question, pending: true });
+  window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ id, target, history, question }));
+  renderView(false);
+  scrollToEnd();
+}
+
+// Called by the app when an answer is ready.
+window.merkwerkAnswer = (id, answer) => {
+  for (const thread of Object.values(chats)) {
+    const turn = thread.find(t => t.id === id);
+    if (turn) Object.assign(turn, { a: answer.html, text: answer.text, pending: false });
+  }
+  renderView(false);
+  scrollToEnd();
+};
+
+function scrollToEnd() {
+  const main = document.querySelector("main");
+  main.scrollTop = main.scrollHeight;
+}
+
+// The "Next Steps" list gets task-style spacing.
+function markNextSteps(n) {
+  for (const h of n.querySelectorAll("h1, h2, h3")) {
+    if (/^next steps$/i.test(h.textContent.trim())) h.nextElementSibling?.classList.add("next");
+  }
+}
+
+function emptyNotes(m) {
+  const e = el("div", "empty");
+  if (m.live) e.textContent = "Notes are written when the meeting ends. The transcript fills in while it runs.";
+  else if (m.kind === "log") e.textContent = "No work log yet.";
+  else if (!m.lines.length) e.textContent = "Nothing was said in this recording.";
+  else e.innerHTML = `No notes yet. Run <code>merkwerk summarize ${m.id}</code> to write them.`;
+  return e;
+}
+
+function transcript(m) {
+  if (!m.lines.length) return el("div", "empty", m.live ? "Waiting for the first words." : "No transcript.");
+  const tx = el("div", "tx");
+  let prev = null;
+  for (const l of m.lines) {
+    if (prev && prev !== l.who) tx.append(el("div", "gap"));
+    tx.append(el("div", "ts", l.at));
+    const who = { me: "Me", them: "Them" }[l.who] ?? l.who;
+    tx.append(el("div", "sp " + (l.who === "me" ? "me" : ""), prev === l.who ? "" : who));
+    tx.append(el("div", null, l.text));
+    prev = l.who;
+  }
+  return tx;
+}
+
+function keys() {
+  const k = el("div", "keys");
+  k.innerHTML = "<kbd>↑</kbd> <kbd>↓</kbd> meetings &nbsp; <kbd>t</kbd> transcript &nbsp; <kbd>/</kbd> search &nbsp; <kbd>a</kbd> ask";
+  return k;
+}
+
+q.addEventListener("input", () => {
+  const items = visible();
+  if (items.length && !items.some(m => m.id === current)) current = items[0].id;
+  renderList();
+  renderView();
+});
+
+document.addEventListener("keydown", e => {
+  if (e.target === q || e.target.id === "ask-input") { if (e.key === "Escape") e.target.blur(); return; }
+  if (e.key === "/") { e.preventDefault(); q.focus(); return; }
+  if (e.key === "a") { e.preventDefault(); document.getElementById("ask-input")?.focus(); return; }
+  if (e.key === "t") { mode = mode === "notes" ? "transcript" : "notes"; select(current); return; }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const items = visible();
+    const i = items.findIndex(m => m.id === current) + (e.key === "ArrowDown" ? 1 : -1);
+    if (items[i]) select(items[i].id);
+  }
+});
+
+// Called by the app with fresh data while the window is open; keeps selection and scroll.
+window.merkwerkUpdate = data => {
+  const main = document.querySelector("main");
+  const top = main.scrollTop;
+  const followLive = mode === "transcript" && main.scrollTop + main.clientHeight >= main.scrollHeight - 40;
+  meetings = data;
+  if (!meetings.some(m => m.id === current)) current = meetings[0]?.id;
+  renderList();
+  renderView(false);
+  main.scrollTop = followLive ? main.scrollHeight : top;
+};
+
+// Deep link: #<id> or #<id>/transcript
+const [hashId, hashMode] = decodeURIComponent(location.hash.slice(1)).split("/");
+if (meetings.some(m => m.id === hashId)) current = hashId;
+if (hashMode === "transcript") mode = "transcript";
+renderList();
+renderView();
+</script>
+</body>
+</html>
