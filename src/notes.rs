@@ -24,10 +24,13 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
             md.modified().ok().hash(&mut h);
         }
     };
+    // Only whether audio is still being written matters (the "Recording" badge), not each flush.
+    let mut live = vec![];
     for dir in std::fs::read_dir(&store.root).into_iter().flatten().flatten() {
-        for file in ["meta.json", "summary.md", "transcript.jsonl", "me.wav"] {
+        for file in ["meta.json", "summary.md", "transcript.jsonl"] {
             add(&dir.path().join(file));
         }
+        live.push(recent(&dir.path().join("me.wav")));
     }
     for f in std::fs::read_dir(activity::dir(&cfg.root))
         .into_iter()
@@ -41,6 +44,7 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
             add(&path.with_extension("jsonl"));
         }
     }
+    live.hash(&mut h);
     // "Today" and "Yesterday" labels change at midnight.
     Local::now().date_naive().hash(&mut h);
     h.finish()
@@ -51,11 +55,40 @@ pub fn page(data: &str) -> String {
     TEMPLATE.replace("/*DATA*/", data)
 }
 
+/// Each meeting's JSON, keyed by the sizes and mtimes of its files, its live flag and the day:
+/// during a recording only the meeting being recorded is rebuilt.
+static MEETINGS: std::sync::Mutex<Option<std::collections::HashMap<String, (u64, Value)>>> =
+    std::sync::Mutex::new(None);
+
 /// All meetings as JSON, safe to embed in a `<script>` tag.
-// Limitation: rereads every meeting; cache per file mtime if the archive grows to thousands.
+// ponytail: the whole array is still serialized and sent to the page on each change; send only
+// the changed meeting if the archive grows to thousands.
 pub fn data(cfg: &Config, store: &Store) -> String {
+    use std::hash::{Hash, Hasher};
     let today = Local::now().date_naive();
-    let mut meetings: Vec<Value> = store.list().iter().map(|m| meeting(store, m, today)).collect();
+    let mut cache = MEETINGS.lock().unwrap();
+    let cache = cache.get_or_insert_with(Default::default);
+    let mut meetings: Vec<Value> = store
+        .list()
+        .iter()
+        .map(|m| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for file in ["meta.json", "summary.md", "transcript.jsonl"] {
+                let md = std::fs::metadata(store.dir(&m.id).join(file)).ok();
+                md.as_ref().map(|md| (md.len(), md.modified().ok())).hash(&mut h);
+            }
+            (recently_written(store, m), today).hash(&mut h);
+            let key = h.finish();
+            match cache.get(&m.id) {
+                Some((k, v)) if *k == key => v.clone(),
+                _ => {
+                    let v = meeting(store, m, today);
+                    cache.insert(m.id.clone(), (key, v.clone()));
+                    v
+                }
+            }
+        })
+        .collect();
     meetings.extend(work_logs(cfg, today));
     // Newest first; a day's work log (`<date>_log`) sorts above that day's meetings.
     meetings.sort_by(|a, b| b["id"].as_str().cmp(&a["id"].as_str()));
@@ -169,8 +202,11 @@ fn day_label(start: DateTime<FixedOffset>, today: chrono::NaiveDate) -> String {
 
 /// No end time and audio written in the last seconds; a crashed recording has no end time either.
 fn recently_written(store: &Store, m: &Meta) -> bool {
-    let wav = store.wav_path(&m.id, crate::audio::Source::Me);
-    std::fs::metadata(wav)
+    recent(&store.wav_path(&m.id, crate::audio::Source::Me))
+}
+
+fn recent(path: &std::path::Path) -> bool {
+    std::fs::metadata(path)
         .and_then(|md| md.modified())
         .is_ok_and(|t| t.elapsed().is_ok_and(|e| e.as_secs() < 15))
 }
@@ -211,6 +247,25 @@ mod tests {
         assert!(!out.contains("Title"));
         assert!(out.contains("<h1>Topic</h1>"));
         assert!(!out.contains("<script>"));
+    }
+
+    #[test]
+    fn data_rebuilds_a_meeting_when_its_notes_change() {
+        let root = std::env::temp_dir().join(format!("merkwerk-notes-test-{}", std::process::id()));
+        let store = Store { root: root.clone() };
+        let mut cfg = Config::from_env();
+        cfg.root = root.clone();
+        let m = store.create("Sync", None).unwrap();
+        store
+            .write(&m.id, "summary.md", "# Sync\n\n# Topic\n- first\n")
+            .unwrap();
+        assert!(data(&cfg, &store).contains("first"));
+        store
+            .write(&m.id, "summary.md", "# Sync\n\n# Topic\n- second, longer\n")
+            .unwrap();
+        let after = data(&cfg, &store);
+        assert!(after.contains("second") && !after.contains("first"), "{after}");
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 
