@@ -266,7 +266,10 @@ mod tag_tests {
             .unwrap();
         assert_eq!(meta.tags, ["Sales", "Q4"]);
         assert!(store.set_tags("../x", &[]).is_err());
-        assert_eq!(store.set_title(&a.id, "  Pipeline review ").unwrap().title, "Pipeline review");
+        assert_eq!(
+            store.set_title(&a.id, "  Pipeline review ").unwrap().title,
+            "Pipeline review"
+        );
         assert!(store.set_title(&a.id, " ").is_err());
         assert!(store.set_title("../x", "y").is_err());
         // Trash guards run before anything moves: bad ids and live recordings are refused.
