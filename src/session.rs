@@ -235,6 +235,8 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     }
     let summary = summarize::summarize(cfg, &meta, &transcript)?;
     store.write(id, "summary.md", &summary)?;
+    // Reload: the title or tags may have been edited in the notes window while summarizing.
+    let mut meta = store.load(id)?;
     if meta.title == store::UNTITLED
         && let Some(title) = summarize::title(&summary)
     {

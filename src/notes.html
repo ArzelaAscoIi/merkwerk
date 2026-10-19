@@ -81,6 +81,13 @@
   @media (max-width: 720px) { .wrap { padding: 24px 16px 64px; } }
   header { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
   h1.title { font-size: 26px; line-height: 1.2; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 6px; }
+  h1.title.editable { cursor: text; border-radius: 6px; }
+  h1.title.editable:hover { background: var(--hover); }
+  .title-input {
+    font: inherit; font-size: 26px; line-height: 1.2; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 6px;
+    color: var(--text); background: var(--bg); width: 100%; box-sizing: border-box;
+    border: 1px solid var(--accent); border-radius: 6px; padding: 0 4px; outline: none;
+  }
   .meta { display: block; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   .rec { color: var(--rec); font-weight: 500; }
   .rec::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--rec); margin-right: 6px; vertical-align: 1px; }
@@ -114,6 +121,8 @@
   }
   .copy:hover { color: var(--text); }
   .copy:active { transform: scale(0.98); }
+  .copy.danger:hover, .copy.armed { color: var(--rec); border-color: var(--rec); }
+  .copy.icon { display: inline-flex; align-items: center; padding: 5px 8px; }
 
   .body { margin-top: 32px; }
   @media (prefers-reduced-motion: no-preference) {
@@ -196,6 +205,11 @@ let askId = 0;
 let mode = "notes";
 // Text of the open "add tag" field, or null when closed; survives live re-renders.
 let tagDraft = null;
+// Text of the title being edited, or null when not editing; survives live re-renders.
+let titleDraft = null;
+let rendering = false;
+// Id of the meeting whose Delete button was clicked once and now asks to confirm.
+let deleteArmed = null;
 
 const el = (tag, cls, text) => {
   const e = document.createElement(tag);
@@ -238,7 +252,7 @@ function parts(cls, texts) {
 }
 
 function select(id) {
-  if (id !== current) tagDraft = null;
+  if (id !== current) tagDraft = titleDraft = deleteArmed = null;
   current = id;
   history.replaceState(null, "", "#" + id + (mode === "transcript" ? "/transcript" : ""));
   renderList();
@@ -250,7 +264,9 @@ function renderView(animate = true) {
   const typing = document.getElementById("ask-input");
   const draft = typing?.value ?? "";
   const focused = document.activeElement === typing;
+  rendering = true; // removing a focused input may fire blur; that is not the user leaving it
   view.replaceChildren();
+  rendering = false;
   const m = meetings.find(x => x.id === current);
   if (!m) {
     const e = el("div", "empty");
@@ -262,7 +278,7 @@ function renderView(animate = true) {
 
   const head = el("header");
   const left = el("div");
-  left.append(el("h1", "title", m.title));
+  left.append(m.kind === "log" ? el("h1", "title", m.title) : titleEditor(m));
   const meta = parts("meta parts", [m.date, m.span, m.app]);
   if (m.live) meta.prepend(el("span", "rec", "Recording"));
   left.append(meta);
@@ -279,6 +295,7 @@ function renderView(animate = true) {
     seg.append(b);
   }
   const tools = el("div", "tools");
+  if (m.kind !== "log" && !m.live) tools.append(deleteButton(m));
   if (mode === "transcript" && m.lines.length) tools.append(copyButton(m));
   tools.append(seg);
   head.append(left, tools);
@@ -306,6 +323,41 @@ function renderView(animate = true) {
     if (focused) input.focus();
   }
   document.getElementById("tag-input")?.focus();
+  document.getElementById("title-input")?.focus();
+}
+
+function titleEditor(m) {
+  if (titleDraft === null) {
+    const h = el("h1", "title editable", m.title);
+    h.tabIndex = 0;
+    h.title = "Rename";
+    h.setAttribute("aria-label", `${m.title}, rename`);
+    const edit = () => { titleDraft = m.title; renderView(false); };
+    h.onclick = edit;
+    h.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); edit(); } };
+    return h;
+  }
+  const input = el("input", "title-input");
+  input.id = "title-input";
+  input.setAttribute("aria-label", "Meeting title");
+  input.value = titleDraft;
+  input.oninput = () => { titleDraft = input.value; };
+  const commit = () => {
+    const t = input.value.trim();
+    titleDraft = null;
+    if (t && t !== m.title) {
+      m.title = t;
+      window.webkit?.messageHandlers?.merkwerk?.postMessage(JSON.stringify({ target: m.id, title: t }));
+      renderList();
+    }
+    renderView(false);
+  };
+  input.onkeydown = e => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { titleDraft = null; renderView(false); }
+  };
+  input.onblur = () => { if (titleDraft !== null && !rendering) commit(); };
+  return input;
 }
 
 function tagRow(m) {
@@ -463,6 +515,39 @@ function transcript(m) {
   return tx;
 }
 
+const TRASH_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>';
+
+// Two clicks, since WKWebView has no confirm() dialog; the folder goes to the Trash, not away.
+function deleteButton(m) {
+  const armed = deleteArmed === m.id;
+  const b = el("button", armed ? "copy danger armed" : "copy danger icon", armed ? "Move to Trash?" : null);
+  if (!armed) b.innerHTML = TRASH_ICON;
+  b.title = "Move this recording to the Trash";
+  b.setAttribute("aria-label", armed ? "Confirm: move to Trash" : "Delete recording");
+  b.onclick = () => {
+    if (!armed) { deleteArmed = m.id; renderView(false); return; }
+    deleteArmed = null;
+    window.webkit?.messageHandlers?.merkwerk?.postMessage(JSON.stringify({ target: m.id, delete: true }));
+    const items = visible();
+    const i = items.indexOf(m);
+    meetings = meetings.filter(x => x !== m);
+    current = (items[i + 1] ?? items[i - 1] ?? meetings[0])?.id;
+    if (current) select(current);
+    else { renderList(); renderView(false); }
+  };
+  return b;
+}
+
+// Any press outside the armed button cancels it. Not blur: WebKit blurs a button on its own click.
+// Swaps only that button, so the press still reaches whatever it landed on.
+document.addEventListener("pointerdown", e => {
+  const armed = document.querySelector(".armed");
+  if (!deleteArmed || !armed || armed.contains(e.target)) return;
+  deleteArmed = null;
+  armed.replaceWith(deleteButton(meetings.find(x => x.id === current)));
+}, true);
+
 function copyButton(m) {
   const b = el("button", "copy", "Copy");
   b.title = "Copy the full " + (m.kind === "log" ? "activity" : "transcript");
@@ -496,6 +581,7 @@ q.addEventListener("input", () => {
 
 document.addEventListener("keydown", e => {
   if (e.target.matches("input, textarea")) { if (e.key === "Escape") e.target.blur(); return; }
+  if (e.key === "Escape" && deleteArmed) { deleteArmed = null; renderView(false); return; }
   if (e.key === "/") { e.preventDefault(); q.focus(); return; }
   if (e.key === "a") { e.preventDefault(); document.getElementById("ask-input")?.focus(); return; }
   if (e.key === "t") { mode = mode === "notes" ? "transcript" : "notes"; select(current); return; }

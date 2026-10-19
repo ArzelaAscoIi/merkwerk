@@ -30,7 +30,7 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
         for file in ["meta.json", "summary.md", "transcript.jsonl"] {
             add(&dir.path().join(file));
         }
-        live.push(recent(&dir.path().join("me.wav")));
+        live.push(crate::store::recent(&dir.path().join("me.wav")));
     }
     for f in std::fs::read_dir(activity::dir(&cfg.root))
         .into_iter()
@@ -77,7 +77,7 @@ pub fn data(cfg: &Config, store: &Store) -> String {
                 let md = std::fs::metadata(store.dir(&m.id).join(file)).ok();
                 md.as_ref().map(|md| (md.len(), md.modified().ok())).hash(&mut h);
             }
-            (recently_written(store, m), today).hash(&mut h);
+            (store.live(m), today).hash(&mut h);
             let key = h.finish();
             match cache.get(&m.id) {
                 Some((k, v)) if *k == key => v.clone(),
@@ -133,7 +133,7 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
         },
         "app": m.app.as_deref().map(app_name),
         "tags": m.tags,
-        "live": m.ended_at.is_none() && recently_written(store, m),
+        "live": store.live(m),
         "notes": (!summary.trim().is_empty()).then(|| render(&summary)),
         "lines": lines,
         "search": search,
@@ -200,17 +200,6 @@ fn day_label_naive(d: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
 
 fn day_label(start: DateTime<FixedOffset>, today: chrono::NaiveDate) -> String {
     day_label_naive(start.with_timezone(&Local).date_naive(), today)
-}
-
-/// No end time and audio written in the last seconds; a crashed recording has no end time either.
-fn recently_written(store: &Store, m: &Meta) -> bool {
-    recent(&store.wav_path(&m.id, crate::audio::Source::Me))
-}
-
-fn recent(path: &std::path::Path) -> bool {
-    std::fs::metadata(path)
-        .and_then(|md| md.modified())
-        .is_ok_and(|t| t.elapsed().is_ok_and(|e| e.as_secs() < 15))
 }
 
 /// "Vivaldi Helper" -> "Vivaldi", "zoom.us" stays.

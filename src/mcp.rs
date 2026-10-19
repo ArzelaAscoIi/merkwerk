@@ -266,6 +266,13 @@ mod tag_tests {
             .unwrap();
         assert_eq!(meta.tags, ["Sales", "Q4"]);
         assert!(store.set_tags("../x", &[]).is_err());
+        assert_eq!(store.set_title(&a.id, "  Pipeline review ").unwrap().title, "Pipeline review");
+        assert!(store.set_title(&a.id, " ").is_err());
+        assert!(store.set_title("../x", "y").is_err());
+        // Trash guards run before anything moves: bad ids and live recordings are refused.
+        assert!(store.trash("../x").is_err());
+        std::fs::write(store.wav_path(&a.id, crate::audio::Source::Me), b"").unwrap();
+        assert!(store.trash(&a.id).unwrap_err().to_string().contains("still recording"));
         let cfg = Config::from_env();
         let tagged = call(&cfg, &store, "list_meetings", &json!({"tag": "SALES"})).unwrap();
         assert!(tagged.contains(&a.id));
