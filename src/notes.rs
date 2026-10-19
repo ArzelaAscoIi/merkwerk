@@ -38,12 +38,19 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
         .flatten()
     {
         let path = f.path();
-        // Activity of a day only shows once it has a work log.
         if path.extension().is_some_and(|x| x == "md") {
             add(&path);
             add(&path.with_extension("jsonl"));
         }
     }
+    // Today's activity grows every few seconds; refresh its entry once a minute.
+    let today = activity::dir(&cfg.root).join(format!("{}.jsonl", Local::now().date_naive()));
+    let minute = std::fs::metadata(&today)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() / 60);
+    minute.hash(&mut h);
     live.hash(&mut h);
     // "Today" and "Yesterday" labels change at midnight.
     Local::now().date_naive().hash(&mut h);
@@ -138,16 +145,14 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
     })
 }
 
-/// One entry per day with a work log; its raw view lists the window sessions.
+/// One entry per day with a work log, plus today while it is recorded; its raw view lists the
+/// window sessions.
 fn work_logs(cfg: &Config, today: chrono::NaiveDate) -> Vec<Value> {
     let Ok(dir) = std::fs::read_dir(activity::dir(&cfg.root)) else {
         return vec![];
     };
     let mut out = vec![];
     for path in dir.flatten().map(|e| e.path()) {
-        if path.extension().is_none_or(|x| x != "md") {
-            continue;
-        }
         let Some(day) = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -155,7 +160,17 @@ fn work_logs(cfg: &Config, today: chrono::NaiveDate) -> Vec<Value> {
         else {
             continue;
         };
-        let log = std::fs::read_to_string(&path).unwrap_or_default();
+        let md = path.extension().is_some_and(|x| x == "md");
+        let live =
+            day == today && path.extension().is_some_and(|x| x == "jsonl") && !path.with_extension("md").exists();
+        if !md && !live {
+            continue;
+        }
+        let log = if md {
+            std::fs::read_to_string(&path).unwrap_or_default()
+        } else {
+            String::new()
+        };
         let sessions = activity::visible_sessions(activity::sessions(&activity::entries(cfg, day)), 30);
         let lines: Vec<Value> = sessions
             .iter()
@@ -180,6 +195,7 @@ fn work_logs(cfg: &Config, today: chrono::NaiveDate) -> Vec<Value> {
             "length": format!("{} sessions", lines.len()),
             "app": null,
             "live": false,
+            "today": live,
             "notes": render(&log),
             "lines": lines,
             "search": log.to_lowercase(),
