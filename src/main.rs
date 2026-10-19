@@ -39,6 +39,7 @@ const USAGE: &str = "merkwerk: local meeting recorder
   merkwerk summarize <id>   (re)write transcript.md and summary.md
   merkwerk mcp              MCP server on stdio
   merkwerk model            download the whisper + VAD models
+  merkwerk install          install ~/Applications/merkwerk.app (needed to hear the other side of calls)
 
 env: MERKWERK_DIR MERKWERK_MODEL MERKWERK_LANG MERKWERK_LLM_URL
      MERKWERK_LLM_MODEL MERKWERK_LLM_KEY MERKWERK_IGNORE MERKWERK_ME
@@ -50,7 +51,8 @@ const CALL_IDLE: Duration = Duration::from_secs(15);
 fn main() -> Result<()> {
     let cfg = Config::from_env();
     let store = Store { root: cfg.root.clone() };
-    let args: Vec<String> = env::args().skip(1).collect();
+    // Finder may pass a process serial number (-psn_...) to apps it launches.
+    let args: Vec<String> = env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
     let id = || arg(1).context("missing <id>");
     match arg(0) {
@@ -94,6 +96,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("model") => transcribe::ensure_models(&cfg),
+        Some("install") => install(),
         _ => {
             eprintln!("{USAGE}");
             Ok(())
@@ -102,6 +105,7 @@ fn main() -> Result<()> {
 }
 
 fn watch(cfg: &Config, store: &Store) -> Result<()> {
+    log_to_file(cfg);
     transcribe::ensure_models(cfg)?;
     eprintln!("watching for calls, meetings go to {}", cfg.root.display());
     ui::AUTO.store(config::auto_record(&cfg.root), Ordering::Relaxed);
@@ -186,6 +190,70 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
         }
         // Detecting a call 2 s later is fine and halves the CoreAudio queries.
         thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// Bundle id; macOS keys the mic, system audio and accessibility grants to it.
+const BUNDLE_ID: &str = "io.github.arzelaascoii.merkwerk";
+
+/// Writes ~/Applications/merkwerk.app around a copy of this binary.
+/// macOS asks for system audio on behalf of the app that launched a process, and terminals like
+/// Ghostty or Terminal don't declare it (NSAudioCaptureUsageDescription), so from there the other
+/// side of a call records as silence. As its own app, merkwerk gets asked for it directly.
+fn install() -> Result<()> {
+    let home = env::var("HOME").context("HOME not set")?;
+    let app = std::path::PathBuf::from(home).join("Applications/merkwerk.app");
+    let bin = app.join("Contents/MacOS");
+    std::fs::create_dir_all(&bin)?;
+    std::fs::copy(env::current_exe()?, bin.join("merkwerk"))?;
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>merkwerk</string>
+  <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
+  <key>CFBundleExecutable</key><string>merkwerk</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>{}</string>
+  <key>LSMinimumSystemVersion</key><string>14.6</string>
+  <key>NSMicrophoneUsageDescription</key><string>merkwerk transcribes your side of calls locally.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>merkwerk transcribes the other side of calls locally.</string>
+</dict></plist>
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(app.join("Contents/Info.plist"), plist)?;
+    // Ad-hoc signature over the whole bundle, so macOS ties the permissions to merkwerk.app.
+    let signed = std::process::Command::new("codesign")
+        .args(["--force", "--sign", "-", "--identifier", BUNDLE_ID])
+        .arg(&app)
+        .status()?;
+    anyhow::ensure!(signed.success(), "codesign failed");
+    println!(
+        "installed {}
+start it with: open -a merkwerk (quit any merkwerk running in a terminal first)",
+        app.display()
+    );
+    Ok(())
+}
+
+/// Started as merkwerk.app, stderr goes nowhere; keep it in `$MERKWERK_DIR/merkwerk.log` instead.
+fn log_to_file(cfg: &Config) {
+    use std::io::IsTerminal;
+    use std::os::fd::AsRawFd;
+    if io::stderr().is_terminal() {
+        return;
+    }
+    unsafe extern "C" {
+        fn dup2(from: i32, to: i32) -> i32;
+    }
+    let _ = std::fs::create_dir_all(&cfg.root);
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(cfg.root.join("merkwerk.log"))
+    {
+        unsafe { dup2(file.as_raw_fd(), 2) };
     }
 }
 
