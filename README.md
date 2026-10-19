@@ -45,7 +45,7 @@ no usage limits, no cloud.
 | **Call detection** | Notices when Zoom, Meet, Teams, Slack, FaceTime or any other app starts using the microphone, without bots joining your call. |
 | **Both sides of the call** | Records your microphone as `me` and the system audio as `them`. |
 | **Local transcription** | NVIDIA Parakeet TDT 0.6B v3 (25 languages, punctuation, automatic language detection) or whisper (large-v3-turbo or large-v2). Silero VAD filters silence so the models don't invent text. Live, in 30 second chunks. |
-| **Meeting notes** | Topic sections and next steps with owners, in English, from any OpenAI-compatible LLM. |
+| **Meeting notes** | Next steps with owners and dates first, then decisions and short topic sections, in English, from any OpenAI-compatible LLM. |
 | **Ask** | Chat with a meeting while it runs or afterwards: "What did I miss?", "My action items", answers cite timestamps. Works for a day's work log too. |
 | **Screen activity** | Reads the text of the window you are working in through macOS Accessibility: app, window title, URL, content. No screenshots, no OCR. |
 | **Daily work log** | Every night, the day becomes a log grouped by project, with tickets, PRs, documents, meetings and open threads. |
@@ -173,10 +173,14 @@ claude mcp add merkwerk -- merkwerk mcp
 ```
 
 - **Call detection** reads CoreAudio's per-process input state (macOS 14.2+), so merkwerk's own
-  recording never counts as a call. Other recorders (Granola, screenpipe) are ignored by default.
+  recording never counts as a call. Other recorders and dictation tools are ignored by default.
 - **Capture** uses [cpal](https://github.com/RustAudio/cpal) for the microphone and CoreAudio
   loopback for system audio.
-- **Transcription** runs Silero VAD on each 30 second chunk and sends only speech to
+- **Echo** from your speakers reaching the mic is dropped from `me` when its words match `them`
+  speech at the same time; the raw segments stay in `transcript.jsonl`.
+- **Calendar**: after a meeting, the overlapping calendar event (EventKit) supplies the title and
+  the invited names, so notes can name owners. merkwerk.app asks for calendar access once.
+- **Transcription** runs Silero VAD on chunks of up to 30 seconds, cut at a pause, and sends only speech to
   [parakeet-rs](https://github.com/altunenes/parakeet-rs) (ONNX Runtime) or
   [whisper-rs](https://github.com/tazz4843/whisper-rs).
 - **Screen activity** walks the focused window's accessibility tree every 5 seconds and pauses
@@ -228,7 +232,7 @@ All settings are environment variables; the defaults are fully local.
 | `MERKWERK_LLM_MODEL` | `gemma4` (also selectable in the menu) |
 | `MERKWERK_LLM_KEY` | unset (Bearer token for hosted APIs) |
 | `MERKWERK_ME` | first name of your macOS account (how notes refer to you) |
-| `MERKWERK_IGNORE` | `merkwerk,granola,screenpipe,openwhispr` (apps whose mic use is not a call) |
+| `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr` (apps whose mic use is not a call) |
 | `MERKWERK_SCREEN` | on (`0` turns screen activity off; also switchable in the menu) |
 | `MERKWERK_SCREEN_IGNORE` | unset (extra apps or windows never captured) |
 

@@ -26,8 +26,7 @@ fn ort_env() -> Result<Environment> {
     Ok(ORT_ENV.get_or_init(|| env).clone())
 }
 
-/// Audio is transcribed in chunks of this many seconds (whisper's native window).
-// Limitation: fixed cut can split a word at the boundary; cut at the quietest point if that shows up in transcripts.
+/// Audio is transcribed in chunks of at most this many seconds (whisper's native window).
 pub const CHUNK_SECS: usize = 30;
 
 pub struct Transcriber {

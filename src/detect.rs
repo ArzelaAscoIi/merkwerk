@@ -94,7 +94,7 @@ fn process_name(pid: i32) -> String {
 }
 
 /// Names of other processes currently capturing from any input device, minus ignored ones
-/// (case-insensitive substring match, so "granola" also covers "Granola Helper").
+/// (case-insensitive substring match, so "screenpipe" also covers "screenpipe Helper").
 pub fn mic_users(ignore: &[String]) -> Vec<String> {
     let me = std::process::id() as i32;
     process_objects()

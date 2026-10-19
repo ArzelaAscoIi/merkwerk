@@ -2,6 +2,7 @@
 
 use crate::{
     audio::{self, RATE, Source, to_i16},
+    calendar,
     config::Config,
     store::{self, Meta, Store},
     summarize,
@@ -135,14 +136,17 @@ impl Sink {
             self.wavs[i].write_sample(to_i16(s))?;
         }
         if self.pending[i].len() >= CHUNK {
-            self.send(source);
+            let n = cut(&self.pending[i]);
+            self.send(source, n);
         }
         Ok(())
     }
 
-    fn send(&mut self, source: Source) {
+    /// Hand the first `n` pending samples to the transcriber.
+    fn send(&mut self, source: Source, n: usize) {
         let i = source as usize;
-        let samples = std::mem::take(&mut self.pending[i]);
+        let rest = self.pending[i].split_off(n);
+        let samples = std::mem::replace(&mut self.pending[i], rest);
         let offset = self.sent[i] as f64 / RATE as f64;
         self.sent[i] += samples.len();
         let _ = self.chunk_tx.send((source, offset, samples));
@@ -157,7 +161,7 @@ impl Sink {
 
     fn finish(mut self) -> Result<()> {
         for source in Source::ALL {
-            self.send(source);
+            self.send(source, self.pending[source as usize].len());
         }
         for w in self.wavs {
             w.finalize()?;
@@ -178,16 +182,32 @@ pub fn retranscribe(cfg: &Config, store: &Store, id: &str) -> Result<()> {
             .filter_map(Result::ok)
             .map(|s| s as f32 / i16::MAX as f32)
             .collect();
-        for (n, chunk) in samples.chunks(CHUNK).enumerate() {
-            eprintln!("{} {}/{}", source.label(), n + 1, samples.len().div_ceil(CHUNK));
-            let segs = transcriber.run(source, (n * CHUNK_SECS) as f64, chunk)?;
+        let mut at = 0;
+        while at < samples.len() {
+            eprintln!("{} {}%", source.label(), at * 100 / samples.len());
+            let rest = &samples[at..];
+            let n = if rest.len() > CHUNK { cut(rest) } else { rest.len() };
+            let segs = transcriber.run(source, at as f64 / RATE as f64, &rest[..n])?;
             store.append_segments(id, &segs)?;
+            at += n;
         }
     }
     Ok(())
 }
 
-/// Write transcript.md and summary.md; untitled meetings take the title from the summary.
+/// Where to end a chunk of `samples` (at least CHUNK long): the middle of the quietest 100 ms in
+/// its last 5 s, so the cut falls into a pause instead of splitting a word.
+fn cut(samples: &[f32]) -> usize {
+    const WIN: usize = RATE as usize / 10;
+    let energy = |i: usize| samples[i..i + WIN].iter().map(|s| s * s).sum::<f32>();
+    (CHUNK - 5 * RATE as usize..=CHUNK - WIN)
+        .step_by(WIN / 2)
+        .min_by(|&a, &b| energy(a).total_cmp(&energy(b)))
+        .map_or(CHUNK, |i| i + WIN / 2)
+}
+
+/// Write transcript.md and summary.md. Untitled meetings take the calendar event's title, else
+/// the summary's; the event's invitees are kept in meta.json and given to the notes step.
 pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     let transcript = store.transcript(id);
     store.write(id, "transcript.md", &transcript)?;
@@ -195,9 +215,24 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
         eprintln!("{id}: empty transcript, no summary");
         return Ok(());
     }
-    let summary = summarize::summarize(cfg, &transcript)?;
-    store.write(id, "summary.md", &summary)?;
     let mut meta = store.load(id)?;
+    let secs = |t: &str| {
+        chrono::DateTime::parse_from_rfc3339(t)
+            .ok()
+            .map(|t| t.timestamp() as f64)
+    };
+    if meta.attendees.is_empty()
+        && let Some(start) = secs(&meta.started_at)
+        && let Some(event) = calendar::event_at(start, meta.ended_at.as_deref().and_then(secs).unwrap_or(start))
+    {
+        if meta.title == store::UNTITLED && !event.title.trim().is_empty() {
+            meta.title = event.title;
+        }
+        meta.attendees = event.attendees;
+        store.save(&meta)?;
+    }
+    let summary = summarize::summarize(cfg, &meta, &transcript)?;
+    store.write(id, "summary.md", &summary)?;
     if meta.title == store::UNTITLED
         && let Some(title) = summarize::title(&summary)
     {
@@ -206,4 +241,22 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     }
     eprintln!("{id}: done ({})", meta.title);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cut_lands_in_the_pause_near_the_end() {
+        let mut samples = vec![0.5f32; CHUNK + RATE as usize];
+        let pause = CHUNK - 2 * RATE as usize; // 200 ms of silence, 2 s before the 30 s mark
+        samples[pause..pause + RATE as usize / 5].fill(0.0);
+        let n = cut(&samples);
+        assert!(
+            (pause..pause + RATE as usize / 5).contains(&n),
+            "cut at {n}, pause at {pause}"
+        );
+        assert!(n <= CHUNK);
+    }
 }

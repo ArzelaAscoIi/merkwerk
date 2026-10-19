@@ -67,7 +67,7 @@ impl Config {
             lang: var("MERKWERK_LANG").unwrap_or_else(|| "en,de".into()),
             llm_key: var("MERKWERK_LLM_KEY"),
             me: var("MERKWERK_ME").unwrap_or_else(first_name),
-            ignore: list(&var("MERKWERK_IGNORE").unwrap_or_else(|| "merkwerk,granola,screenpipe,openwhispr".into())),
+            ignore: list(&var("MERKWERK_IGNORE").unwrap_or_else(|| "merkwerk,screenpipe,openwhispr".into())),
             screen_ignore: list(&format!(
                 "{},{}",
                 crate::screen::DEFAULT_IGNORE,
