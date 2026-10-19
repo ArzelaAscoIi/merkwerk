@@ -174,7 +174,8 @@ define_class!(
 );
 
 define_class!(
-    /// Receives chat questions from the notes page (`window.webkit.messageHandlers.merkwerk`).
+    /// Receives chat questions and Start/Stop recording from the notes page
+    /// (`window.webkit.messageHandlers.merkwerk`).
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "MerkwerkChatBridge"]
@@ -192,6 +193,11 @@ define_class!(
             let Ok(req) = serde_json::from_str::<serde_json::Value>(&raw) else {
                 return;
             };
+            match req["action"].as_str() {
+                Some("start") => return START.store(true, Ordering::Relaxed),
+                Some("stop") => return STOP.store(true, Ordering::Relaxed),
+                _ => {}
+            }
             let Some((cfg, store)) = STORE.with_borrow(|s| s.clone()) else {
                 return;
             };
@@ -635,6 +641,8 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             }
             return;
         }
+        let js = format!("window.merkwerkRecording({})", RECORDING.lock().unwrap().is_some());
+        unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
         for (id, answer) in ANSWERS.lock().unwrap().drain(..) {
             let js = format!("window.merkwerkAnswer({id}, {answer})");
             unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };

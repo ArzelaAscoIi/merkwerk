@@ -50,6 +50,12 @@
     display: flex; flex-direction: column; min-height: 0; height: 100dvh;
   }
   .search { padding: 18px 14px 10px; }
+  #rec {
+    display: block; width: calc(100% - 28px); margin: 18px 14px 0; font: inherit; font-weight: 500;
+    color: #fff; background: var(--accent); border: 0; border-radius: 8px; padding: 7px 10px; cursor: default;
+  }
+  #rec.on { background: var(--rec); }
+  #rec[hidden] { display: none; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   input[type=search] {
     width: 100%; font: inherit; color: var(--text);
@@ -160,6 +166,7 @@
 </head>
 <body>
 <aside>
+  <button id="rec" type="button" hidden>Start recording</button>
   <div class="search">
     <label class="sr" for="q">Search meetings</label>
     <input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false">
@@ -438,6 +445,18 @@ document.addEventListener("keydown", e => {
     if (items[i]) select(items[i].id);
   }
 });
+
+// Start/Stop: sends what the button shows, so a double click can't undo the first click.
+const rec = document.getElementById("rec");
+rec.hidden = !window.webkit?.messageHandlers?.merkwerk;
+rec.onclick = () => {
+  window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: rec.classList.contains("on") ? "stop" : "start" }));
+};
+// Called by the app every second with whether it is recording.
+window.merkwerkRecording = on => {
+  rec.classList.toggle("on", on);
+  rec.textContent = on ? "Stop recording" : "Start recording";
+};
 
 // Called by the app with fresh data while the window is open; keeps selection and scroll.
 window.merkwerkUpdate = data => {
