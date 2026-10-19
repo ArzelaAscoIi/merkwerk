@@ -13,7 +13,7 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSBox, NSBoxType,
-    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSImage, NSMenu,
+    NSButton, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSImage, NSMenu,
     NSMenuItem, NSPanel, NSRequestUserAttentionType, NSScreen, NSStatusBar, NSStatusItem, NSStatusWindowLevel,
     NSTextField, NSTitlePosition, NSVariableStatusItemLength, NSView, NSWindow, NSWindowCollectionBehavior,
     NSWindowStyleMask,
@@ -665,8 +665,8 @@ struct Pill {
     secondary: Retained<NSButton>,
 }
 
-const PILL_W: f64 = 400.0;
-const PILL_H: f64 = 40.0;
+const PILL_W: f64 = 320.0;
+const PILL_H: f64 = 28.0;
 
 impl Pill {
     fn new(mtm: MainThreadMarker, handler: &Handler) -> Self {
@@ -701,25 +701,26 @@ impl Pill {
 
         let text = |s: &str, x: f64, w: f64, color: &NSColor| {
             let t = NSTextField::labelWithString(&NSString::from_str(s), mtm);
-            t.setFrame(NSRect::new(NSPoint::new(x, 11.0), NSSize::new(w, 18.0)));
+            t.setFrame(NSRect::new(NSPoint::new(x, 6.0), NSSize::new(w, 16.0)));
             t.setTextColor(Some(color));
-            t.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, unsafe {
+            t.setFont(Some(&NSFont::systemFontOfSize_weight(12.0, unsafe {
                 NSFontWeightMedium
             })));
             root.addSubview(&t);
             t
         };
-        let dot = text("●", 16.0, 14.0, &NSColor::systemRedColor());
-        let label = text("", 34.0, 190.0, &NSColor::colorWithWhite_alpha(0.95, 1.0));
+        let dot = text("●", 11.0, 12.0, &NSColor::systemRedColor());
+        let label = text("", 26.0, 160.0, &NSColor::colorWithWhite_alpha(0.95, 1.0));
         let button = |action, x: f64| {
             let b =
                 unsafe { NSButton::buttonWithTitle_target_action(ns_string!(""), Some(handler), Some(action), mtm) };
-            b.setFrame(NSRect::new(NSPoint::new(x, 6.0), NSSize::new(76.0, 28.0)));
+            b.setControlSize(NSControlSize::Small);
+            b.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(60.0, 22.0)));
             root.addSubview(&b);
             b
         };
-        let secondary = button(sel!(ignore:), PILL_W - 170.0);
-        let primary = button(sel!(toggle:), PILL_W - 88.0);
+        let secondary = button(sel!(ignore:), PILL_W - 130.0);
+        let primary = button(sel!(toggle:), PILL_W - 66.0);
         panel.setContentView(Some(&root));
         Pill {
             panel,
@@ -751,9 +752,9 @@ impl Pill {
         };
         self.dot.setTextColor(Some(&color));
         self.label.setStringValue(&NSString::from_str(&label));
-        let width = if secondary.is_some() { 190.0 } else { 270.0 };
+        let width = if secondary.is_some() { 160.0 } else { 224.0 };
         self.label
-            .setFrame(NSRect::new(NSPoint::new(34.0, 11.0), NSSize::new(width, 18.0)));
+            .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
         self.primary.setTitle(&NSString::from_str(primary));
         self.secondary.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));
