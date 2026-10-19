@@ -92,6 +92,13 @@
   }
   .seg button[aria-pressed=true] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 12%, transparent); }
   .seg button:active { transform: scale(0.98); }
+  .tools { display: flex; gap: 8px; align-items: center; }
+  .copy {
+    font: inherit; font-size: 13px; color: var(--muted); background: none; cursor: default;
+    border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px;
+  }
+  .copy:hover { color: var(--text); }
+  .copy:active { transform: scale(0.98); }
 
   .body { margin-top: 32px; }
   @media (prefers-reduced-motion: no-preference) {
@@ -252,7 +259,10 @@ function renderView(animate = true) {
     b.onclick = () => { mode = key; select(current); };
     seg.append(b);
   }
-  head.append(left, seg);
+  const tools = el("div", "tools");
+  if (mode === "transcript" && m.lines.length) tools.append(copyButton(m));
+  tools.append(seg);
+  head.append(left, tools);
   view.append(head);
 
   const body = el("div", animate ? "body anim" : "body");
@@ -383,6 +393,24 @@ function transcript(m) {
     prev = l.who;
   }
   return tx;
+}
+
+function copyButton(m) {
+  const b = el("button", "copy", "Copy");
+  b.title = "Copy the full " + (m.kind === "log" ? "activity" : "transcript");
+  b.onclick = () => {
+    const text = m.lines.map(l => `[${l.at}] ${{ me: "Me", them: "Them" }[l.who] ?? l.who}: ${l.text}`).join("\n");
+    // ponytail: execCommand, because the page has no secure origin and navigator.clipboard is missing there.
+    const t = el("textarea");
+    t.value = text;
+    document.body.append(t);
+    t.select();
+    document.execCommand("copy");
+    t.remove();
+    b.textContent = "Copied";
+    setTimeout(() => { b.textContent = "Copy"; }, 1500);
+  };
+  return b;
 }
 
 function keys() {

@@ -64,11 +64,17 @@ cd merkwerk
 cargo install --path .
 merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD (1 MB)
 ollama pull gemma4      # the default notes model
-merkwerk                # opens the notes window and starts watching
+merkwerk install        # writes ~/Applications/merkwerk.app
+open -a merkwerk        # opens the notes window and starts watching
 ```
 With LM Studio, start its local server on port 1234 from the Developer tab or with `lms server start`, and load a model.
 
-On first use macOS asks for these permissions, for the terminal or app that runs merkwerk:
+Run it as `merkwerk.app`, not from a terminal: macOS asks for system audio on behalf of the app
+that started merkwerk, and terminals like Ghostty or Terminal can't get that permission, so the
+other side of a call would record as silence. Rerun `merkwerk install` after every update. The app
+logs to `~/merkwerk/merkwerk.log`. Environment variables from your shell don't reach the app.
+
+On first use macOS asks merkwerk.app for these permissions:
 
 | Permission | Why |
 |---|---|
@@ -137,6 +143,7 @@ merkwerk transcribe <id>  re-run speech recognition on saved audio
 merkwerk summarize <id>   rewrite transcript.md and notes
 merkwerk mcp              MCP server on stdio
 merkwerk model            download the speech models
+merkwerk install          install ~/Applications/merkwerk.app
 ```
 
 ## MCP
