@@ -28,15 +28,15 @@ use std::{
     process::Command,
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
 
 /// Set by the watch loop: the app being recorded and when it started.
 pub static RECORDING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-/// Meetings still being transcribed / summarized.
-pub static FINISHING: AtomicUsize = AtomicUsize::new(0);
+/// Ids of meetings still being transcribed / summarized.
+pub static FINISHING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Menu clicks, consumed by the watch loop.
 pub static START: AtomicBool = AtomicBool::new(false);
 pub static STOP: AtomicBool = AtomicBool::new(false);
@@ -371,7 +371,7 @@ fn set_icon(mtm: MainThreadMarker, app: &NSApplication) {
 fn badge() -> String {
     if RECORDING.lock().unwrap().is_some() {
         "REC".into()
-    } else if FINISHING.load(Ordering::Relaxed) > 0 {
+    } else if !FINISHING.lock().unwrap().is_empty() {
         "…".into()
     } else {
         String::new()
@@ -383,7 +383,7 @@ fn title() -> String {
         let s = since.elapsed().as_secs();
         return format!("● {:02}:{:02}", s / 60, s % 60);
     }
-    if FINISHING.load(Ordering::Relaxed) > 0 {
+    if !FINISHING.lock().unwrap().is_empty() {
         "◌ mw".into()
     } else {
         "mw".into()
@@ -420,7 +420,7 @@ fn entries(store: &Store) -> Vec<Row> {
         (None, None) if auto => Row::Label("Watching for calls (auto-record)".into()),
         (None, None) => Row::Label("Watching for calls (manual)".into()),
     }];
-    let finishing = FINISHING.load(Ordering::Relaxed);
+    let finishing = FINISHING.lock().unwrap().len();
     if finishing > 0 {
         rows.push(Row::Label(format!("Writing notes for {finishing} meeting(s)")));
     }
