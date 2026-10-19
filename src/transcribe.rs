@@ -3,7 +3,7 @@
 
 use crate::{
     audio::Source,
-    config::{Config, MODEL_URL, PARAKEET_FILES, PARAKEET_URL, VAD_URL},
+    config::{Config, MODEL_URL, MODEL_V2_URL, PARAKEET_FILES, PARAKEET_URL, VAD_URL},
     store::Segment,
 };
 use anyhow::{Context, Result, bail};
@@ -49,12 +49,15 @@ impl Transcriber {
                 )
                 .with_context(|| format!("loading Parakeet from {}", cfg.parakeet.display()))?,
             )),
-            "whisper" => Engine::Whisper {
-                ctx: WhisperContext::new_with_params(&cfg.model, WhisperContextParameters::default())
-                    .with_context(|| format!("loading whisper model {}", cfg.model.display()))?,
-                langs: cfg.lang.split(',').map(|l| l.trim().to_string()).collect(),
-            },
-            other => bail!("unknown MERKWERK_ENGINE {other:?}, use parakeet or whisper"),
+            engine @ ("whisper" | "whisper-v2") => {
+                let model = if engine == "whisper" { &cfg.model } else { &cfg.model_v2 };
+                Engine::Whisper {
+                    ctx: WhisperContext::new_with_params(model, WhisperContextParameters::default())
+                        .with_context(|| format!("loading whisper model {}", model.display()))?,
+                    langs: cfg.lang.split(',').map(|l| l.trim().to_string()).collect(),
+                }
+            }
+            other => bail!("unknown MERKWERK_ENGINE {other:?}, use parakeet, whisper or whisper-v2"),
         };
         let vad = WhisperVadContext::new(&cfg.vad.to_string_lossy(), WhisperVadContextParams::default())
             .with_context(|| format!("loading VAD model {}", cfg.vad.display()))?;
@@ -168,6 +171,7 @@ fn is_annotation(t: &str) -> bool {
 fn model_files(cfg: &Config, engine: &str) -> Vec<(std::path::PathBuf, String)> {
     match engine {
         "whisper" => vec![(cfg.model.clone(), MODEL_URL.into())],
+        "whisper-v2" => vec![(cfg.model_v2.clone(), MODEL_V2_URL.into())],
         _ => PARAKEET_FILES
             .iter()
             .map(|f| (cfg.parakeet.join(f), format!("{PARAKEET_URL}/{f}")))

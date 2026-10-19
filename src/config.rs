@@ -9,6 +9,8 @@ pub struct Config {
     pub parakeet: PathBuf,
     /// whisper.cpp ggml model file.
     pub model: PathBuf,
+    /// whisper large-v2 ggml model, next to `model`; slower than turbo, often more accurate.
+    pub model_v2: PathBuf,
     /// Silero VAD model (ggml), next to the whisper model; drops non-speech before transcription.
     pub vad: PathBuf,
     /// Whisper language code, comma-separated candidates (picked per utterance), or "auto".
@@ -33,6 +35,7 @@ pub const PARAKEET_URL: &str = "https://huggingface.co/istupakov/parakeet-tdt-0.
 pub const PARAKEET_FILES: [&str; 3] = ["encoder-model.int8.onnx", "decoder_joint-model.int8.onnx", "vocab.txt"];
 pub const VAD_URL: &str = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
 pub const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
+pub const MODEL_V2_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2-q5_0.bin";
 
 impl Config {
     pub fn from_env() -> Self {
@@ -56,6 +59,7 @@ impl Config {
                 .filter(|v| !v.is_empty()),
             vad: model.with_file_name("ggml-silero-v5.1.2.bin"),
             parakeet: model.with_file_name("parakeet-tdt-0.6b-v3"),
+            model_v2: model.with_file_name("ggml-large-v2-q5_0.bin"),
             model,
             lang: var("MERKWERK_LANG").unwrap_or_else(|| "en,de".into()),
             llm_url: var("MERKWERK_LLM_URL").unwrap_or_else(|| "http://localhost:11434/v1/chat/completions".into()),
@@ -92,7 +96,7 @@ fn first_name() -> String {
 }
 
 impl Config {
-    /// Speech-to-text engine, `parakeet` or `whisper`: env var, else the menu choice, else parakeet.
+    /// Speech-to-text engine, `parakeet`, `whisper` or `whisper-v2`: env var, else the menu choice, else parakeet.
     pub fn engine(&self) -> String {
         chosen(&self.root, "MERKWERK_ENGINE", "engine", "parakeet")
     }
