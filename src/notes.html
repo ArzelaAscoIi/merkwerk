@@ -74,7 +74,9 @@
   .none { color: var(--muted); padding: 24px 10px; font-size: 13px; }
 
   /* main */
-  main { overflow-y: auto; height: 100dvh; }
+  /* position: relative keeps the chat's absolutely positioned .sr label inside main's scroll box;
+     otherwise it lands below the content and makes the whole page scroll too. */
+  main { overflow-y: auto; height: 100dvh; position: relative; }
   .wrap { max-width: 760px; padding: 40px 48px 96px; }
   @media (max-width: 720px) { .wrap { padding: 24px 16px 64px; } }
   header { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; }
