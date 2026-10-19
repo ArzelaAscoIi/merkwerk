@@ -159,6 +159,12 @@ define_class!(
             STOP.store(true, Ordering::Relaxed);
         }
 
+        /// The pill's Record: only ever starts, so a second click can't stop what the first started.
+        #[unsafe(method(record:))]
+        fn record(&self, _sender: &NSObject) {
+            START.store(true, Ordering::Relaxed);
+        }
+
         #[unsafe(method(toggle:))]
         fn toggle(&self, _sender: &NSObject) {
             let flag = if RECORDING.lock().unwrap().is_some() { &STOP } else { &START };
@@ -690,7 +696,7 @@ fn pill_state() -> PillState {
 
 /// Floating pill at the top of the screen, on every desktop: the recording indicator and the
 /// Record/Ignore prompt for a detected call. Unlike the menu bar item, the notch can't hide it.
-/// While recording it shrinks to a breathing dot; hovering it shows the time and Stop.
+/// While recording it shrinks to a breathing dot and the time; hovering it shows the app and Stop.
 struct Pill {
     panel: Retained<NSPanel>,
     dot: Retained<NSTextField>,
@@ -698,12 +704,17 @@ struct Pill {
     primary: Retained<NSButton>,
     secondary: Retained<NSButton>,
     compact: Cell<bool>,
+    /// Hover expands only once the mouse has left the pill since recording began, so the click on
+    /// Record can't turn into a click on Stop.
+    armed: Cell<bool>,
+    /// Label text for the compact and the full pill.
+    text: RefCell<(String, String)>,
     born: Instant,
 }
 
 const PILL_W: f64 = 320.0;
 const PILL_H: f64 = 28.0;
-const PILL_COMPACT_W: f64 = 30.0;
+const PILL_COMPACT_W: f64 = 76.0;
 
 /// The notes page's dark-mode accent, #3cc497; the pill is always dark.
 fn accent() -> Retained<NSColor> {
@@ -754,8 +765,7 @@ impl Pill {
             root.addSubview(&t);
             t
         };
-        // Centered in the compact pill's circle.
-        let dot = text("●", (PILL_COMPACT_W - 16.0) / 2.0, 16.0, &accent());
+        let dot = text("●", 7.0, 16.0, &accent());
         dot.setAlignment(NSTextAlignment::Center);
         let label = text("", 26.0, 160.0, &NSColor::colorWithWhite_alpha(0.95, 1.0));
         let button = |action, x: f64| {
@@ -768,7 +778,7 @@ impl Pill {
             b
         };
         let secondary = button(sel!(ignore:), PILL_W - 130.0);
-        let primary = button(sel!(toggle:), PILL_W - 66.0);
+        let primary = button(sel!(record:), PILL_W - 66.0);
         panel.setContentView(Some(&root));
         Pill {
             panel,
@@ -777,6 +787,8 @@ impl Pill {
             primary,
             secondary,
             compact: Cell::new(false),
+            armed: Cell::new(false),
+            text: RefCell::default(),
             born: Instant::now(),
         }
     }
@@ -800,17 +812,36 @@ impl Pill {
                 && m.x <= f.origin.x + f.size.width
                 && m.y >= f.origin.y
                 && m.y <= f.origin.y + f.size.height;
-            self.set_compact(!inside);
+            if !inside {
+                self.armed.set(true);
+            }
+            self.set_compact(!(inside && self.armed.get()));
         }
     }
 
-    /// Resizes around the same center; the compact pill shows only the dot.
+    fn set_label(&self) {
+        let compact = self.compact.get();
+        let text = self.text.borrow();
+        self.label
+            .setStringValue(&NSString::from_str(if compact { &text.0 } else { &text.1 }));
+        let width = if compact {
+            PILL_COMPACT_W - 32.0
+        } else if self.secondary.isHidden() {
+            224.0
+        } else {
+            160.0
+        };
+        self.label
+            .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
+    }
+
+    /// Resizes around the same center; the compact pill shows only the dot and the time.
     fn set_compact(&self, compact: bool) {
         if compact == self.compact.get() {
             return;
         }
         self.compact.set(compact);
-        self.label.setHidden(compact);
+        self.set_label();
         self.primary.setHidden(compact);
         let width = if compact { PILL_COMPACT_W } else { PILL_W };
         let f = self.panel.frame();
@@ -823,41 +854,40 @@ impl Pill {
     }
 
     fn show(&self, mtm: MainThreadMarker, state: &PillState) {
-        let (label, primary, secondary, color) = match state {
+        let (short, full, primary, secondary, color) = match state {
             PillState::Hidden => {
                 self.panel.orderOut(None);
                 return;
             }
-            PillState::Recording(app, secs) => (
-                format!("{:02}:{:02}  {app}", secs / 60, secs % 60),
-                "Stop",
-                None,
-                accent(),
-            ),
+            PillState::Recording(app, secs) => {
+                let time = format!("{:02}:{:02}", secs / 60, secs % 60);
+                (time.clone(), format!("{time}  {app}"), "Stop", None, accent())
+            }
             PillState::Pending(app) => (
+                String::new(),
                 format!("Call detected  {app}"),
                 "Record",
                 Some("Ignore"),
                 NSColor::systemOrangeColor(),
             ),
         };
+        let recording = matches!(state, PillState::Recording(..));
+        // A recording starts compact, even under the mouse that clicked Record.
+        if recording && self.primary.action() != Some(sel!(stop:)) {
+            self.armed.set(false);
+            self.set_compact(true);
+        }
+        if !recording {
+            self.set_compact(false);
+        }
         self.dot.setTextColor(Some(&color));
-        self.label.setStringValue(&NSString::from_str(&label));
-        let width = if secondary.is_some() { 160.0 } else { 224.0 };
-        self.label
-            .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
         self.primary.setTitle(&NSString::from_str(primary));
-        let action = if matches!(state, PillState::Recording(..)) {
-            sel!(stop:)
-        } else {
-            sel!(toggle:)
-        };
+        let action = if recording { sel!(stop:) } else { sel!(record:) };
         unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));
-        if !matches!(state, PillState::Recording(..)) {
-            self.set_compact(false);
-        }
+        *self.text.borrow_mut() = (short, full);
+        self.set_label();
         if !self.panel.isVisible() {
             if let Some(screen) = NSScreen::mainScreen(mtm) {
                 let f = screen.visibleFrame();
@@ -866,7 +896,7 @@ impl Pill {
                 self.panel.setFrameOrigin(NSPoint::new(x, y));
             }
             self.compact.set(false);
-            self.set_compact(matches!(state, PillState::Recording(..)));
+            self.set_compact(recording);
             self.panel.orderFrontRegardless();
         }
     }
