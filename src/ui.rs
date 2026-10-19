@@ -13,10 +13,10 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSBox, NSBoxType,
-    NSButton, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSImage, NSMenu,
-    NSMenuItem, NSPanel, NSRequestUserAttentionType, NSScreen, NSStatusBar, NSStatusItem, NSStatusWindowLevel,
-    NSTextField, NSTitlePosition, NSVariableStatusItemLength, NSView, NSWindow, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSButton, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium,
+    NSImage, NSMenu, NSMenuItem, NSPanel, NSRequestUserAttentionType, NSScreen, NSStatusBar, NSStatusItem,
+    NSStatusWindowLevel, NSTextField, NSTitlePosition, NSVariableStatusItemLength, NSView, NSWindow,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_web_kit::{
@@ -767,7 +767,11 @@ impl Pill {
     /// The dot lights up with what the mic or system audio hears; dim means silence.
     fn level(&self) {
         let peak = f32::from_bits(crate::audio::LEVEL.swap(0, Ordering::Relaxed));
-        let alpha = if RECORDING.lock().unwrap().is_some() { (0.25 + 1.5 * peak.sqrt()).min(1.0) } else { 1.0 };
+        let alpha = if RECORDING.lock().unwrap().is_some() {
+            (0.25 + 1.5 * peak.sqrt()).min(1.0)
+        } else {
+            1.0
+        };
         self.dot.setAlphaValue(alpha as f64);
     }
 
@@ -796,7 +800,11 @@ impl Pill {
         self.label
             .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
         self.primary.setTitle(&NSString::from_str(primary));
-        let action = if matches!(state, PillState::Recording(..)) { sel!(stop:) } else { sel!(toggle:) };
+        let action = if matches!(state, PillState::Recording(..)) {
+            sel!(stop:)
+        } else {
+            sel!(toggle:)
+        };
         unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));

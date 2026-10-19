@@ -286,7 +286,7 @@ mod live {
                 s.url,
                 s.text.len(),
                 t.elapsed(),
-                &s.text.chars().take(600).collect::<String>()
+                s.text.chars().take(600).collect::<String>()
             ),
             None => eprintln!("no snapshot ({:?})", t.elapsed()),
         }
