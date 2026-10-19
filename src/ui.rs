@@ -12,18 +12,18 @@ use objc2::{
     sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSBox, NSBoxType,
-    NSButton, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium,
-    NSImage, NSMenu, NSMenuItem, NSPanel, NSRequestUserAttentionType, NSScreen, NSStatusBar, NSStatusItem,
-    NSStatusWindowLevel, NSTextField, NSTitlePosition, NSVariableStatusItemLength, NSView, NSWindow,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions, NSBackingStoreType,
+    NSBox, NSBoxType, NSButton, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSFont,
+    NSFontWeightMedium, NSImage, NSMenu, NSMenuItem, NSPanel, NSRequestUserAttentionType, NSScreen, NSStatusBar,
+    NSStatusItem, NSStatusWindowLevel, NSTextAlignment, NSTextField, NSTitlePosition, NSVariableStatusItemLength,
+    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKWebView, WKWebViewConfiguration,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     process::Command,
     sync::{
@@ -159,6 +159,12 @@ define_class!(
             STOP.store(true, Ordering::Relaxed);
         }
 
+        /// The pill's Record: only ever starts, so a second click can't stop what the first started.
+        #[unsafe(method(record:))]
+        fn record(&self, _sender: &NSObject) {
+            START.store(true, Ordering::Relaxed);
+        }
+
         #[unsafe(method(toggle:))]
         fn toggle(&self, _sender: &NSObject) {
             let flag = if RECORDING.lock().unwrap().is_some() { &STOP } else { &START };
@@ -168,7 +174,8 @@ define_class!(
 );
 
 define_class!(
-    /// Receives chat questions and tag edits from the notes page (`window.webkit.messageHandlers.merkwerk`).
+    /// Receives chat questions, tag/title edits, deletes and Start/Stop recording from the notes
+    /// page (`window.webkit.messageHandlers.merkwerk`).
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "MerkwerkChatBridge"]
@@ -186,6 +193,11 @@ define_class!(
             let Ok(req) = serde_json::from_str::<serde_json::Value>(&raw) else {
                 return;
             };
+            match req["action"].as_str() {
+                Some("start") => return START.store(true, Ordering::Relaxed),
+                Some("stop") => return STOP.store(true, Ordering::Relaxed),
+                _ => {}
+            }
             let Some((cfg, store)) = STORE.with_borrow(|s| s.clone()) else {
                 return;
             };
@@ -651,6 +663,8 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             }
             return;
         }
+        let js = format!("window.merkwerkRecording({})", RECORDING.lock().unwrap().is_some());
+        unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
         for (id, answer) in ANSWERS.lock().unwrap().drain(..) {
             let js = format!("window.merkwerkAnswer({id}, {answer})");
             unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
@@ -712,16 +726,30 @@ fn pill_state() -> PillState {
 
 /// Floating pill at the top of the screen, on every desktop: the recording indicator and the
 /// Record/Ignore prompt for a detected call. Unlike the menu bar item, the notch can't hide it.
+/// While recording it shrinks to a breathing dot and the time; hovering it shows the app and Stop.
 struct Pill {
     panel: Retained<NSPanel>,
     dot: Retained<NSTextField>,
     label: Retained<NSTextField>,
     primary: Retained<NSButton>,
     secondary: Retained<NSButton>,
+    compact: Cell<bool>,
+    /// Hover expands only once the mouse has left the pill since recording began, so the click on
+    /// Record can't turn into a click on Stop.
+    armed: Cell<bool>,
+    /// Label text for the compact and the full pill.
+    text: RefCell<(String, String)>,
+    born: Instant,
 }
 
 const PILL_W: f64 = 320.0;
 const PILL_H: f64 = 28.0;
+const PILL_COMPACT_W: f64 = 76.0;
+
+/// The notes page's dark-mode accent, #3cc497; the pill is always dark.
+fn accent() -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(0x3c as f64 / 255.0, 0xc4 as f64 / 255.0, 0x97 as f64 / 255.0, 1.0)
+}
 
 impl Pill {
     fn new(mtm: MainThreadMarker, handler: &Handler) -> Self {
@@ -744,6 +772,9 @@ impl Pill {
         panel.setOpaque(false);
         panel.setHasShadow(true);
         panel.setBackgroundColor(Some(&NSColor::clearColor()));
+        // Drag it anywhere, on any screen; AppKit saves where it was left under this name.
+        panel.setMovableByWindowBackground(true);
+        panel.setFrameAutosaveName(ns_string!("pill"));
 
         let root = NSView::initWithFrame(mtm.alloc(), rect);
         let background = NSBox::initWithFrame(mtm.alloc(), rect);
@@ -752,6 +783,9 @@ impl Pill {
         background.setBorderWidth(0.0);
         background.setCornerRadius(PILL_H / 2.0);
         background.setFillColor(&NSColor::colorWithWhite_alpha(0.09, 0.94));
+        background.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         root.addSubview(&background);
 
         let text = |s: &str, x: f64, w: f64, color: &NSColor| {
@@ -764,18 +798,22 @@ impl Pill {
             root.addSubview(&t);
             t
         };
-        let dot = text("●", 11.0, 12.0, &NSColor::systemRedColor());
+        let dot = text("●", 7.0, 16.0, &accent());
+        dot.setAlignment(NSTextAlignment::Center);
         let label = text("", 26.0, 160.0, &NSColor::colorWithWhite_alpha(0.95, 1.0));
-        let button = |action, x: f64| {
+        let button = |action, x: f64, w: f64, size: NSControlSize| {
             let b =
                 unsafe { NSButton::buttonWithTitle_target_action(ns_string!(""), Some(handler), Some(action), mtm) };
-            b.setControlSize(NSControlSize::Small);
-            b.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(60.0, 22.0)));
+            b.setControlSize(size);
+            let h = if size == NSControlSize::Small { 22.0 } else { PILL_H };
+            b.setFrame(NSRect::new(NSPoint::new(x, (PILL_H - h) / 2.0), NSSize::new(w, h)));
+            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
             root.addSubview(&b);
             b
         };
-        let secondary = button(sel!(ignore:), PILL_W - 130.0);
-        let primary = button(sel!(toggle:), PILL_W - 66.0);
+        // Record is the big one: it is what a detected call is shown for.
+        let primary = button(sel!(record:), PILL_W - 100.0, 96.0, NSControlSize::Regular);
+        let secondary = button(sel!(ignore:), PILL_W - 160.0, 56.0, NSControlSize::Small);
         panel.setContentView(Some(&root));
         Pill {
             panel,
@@ -783,60 +821,140 @@ impl Pill {
             label,
             primary,
             secondary,
+            compact: Cell::new(false),
+            armed: Cell::new(false),
+            text: RefCell::default(),
+            born: Instant::now(),
         }
     }
 
-    /// The dot lights up with what the mic or system audio hears; dim means silence.
+    /// The dot breathes slowly and lights up with what the mic or system audio hears. Also expands
+    /// the recording pill while the mouse is over it.
     fn level(&self) {
         let peak = f32::from_bits(crate::audio::LEVEL.swap(0, Ordering::Relaxed));
-        let alpha = if RECORDING.lock().unwrap().is_some() {
-            (0.25 + 1.5 * peak.sqrt()).min(1.0)
+        let recording = RECORDING.lock().unwrap().is_some();
+        let alpha = if recording {
+            let breath = 0.45 + 0.2 * (self.born.elapsed().as_secs_f32() * std::f32::consts::PI).sin();
+            breath.max(0.25 + 1.5 * peak.sqrt()).min(1.0)
         } else {
             1.0
         };
         self.dot.setAlphaValue(alpha as f64);
+        if recording && self.panel.isVisible() {
+            let f = self.panel.frame();
+            let m = NSEvent::mouseLocation();
+            let inside = m.x >= f.origin.x
+                && m.x <= f.origin.x + f.size.width
+                && m.y >= f.origin.y
+                && m.y <= f.origin.y + f.size.height;
+            if !inside {
+                self.armed.set(true);
+            }
+            self.set_compact(!(inside && self.armed.get()));
+        }
+    }
+
+    fn set_label(&self) {
+        let compact = self.compact.get();
+        let text = self.text.borrow();
+        self.label
+            .setStringValue(&NSString::from_str(if compact { &text.0 } else { &text.1 }));
+        let width = if compact {
+            PILL_COMPACT_W - 32.0
+        } else if self.secondary.isHidden() {
+            190.0
+        } else {
+            130.0
+        };
+        self.label
+            .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
+    }
+
+    /// Resizes around the same center; the compact pill shows only the dot and the time.
+    fn set_compact(&self, compact: bool) {
+        if compact == self.compact.get() {
+            return;
+        }
+        self.compact.set(compact);
+        self.set_label();
+        self.primary.setHidden(compact);
+        let width = if compact { PILL_COMPACT_W } else { PILL_W };
+        let f = self.panel.frame();
+        let x = f.origin.x + (f.size.width - width) / 2.0;
+        self.panel.setFrame_display(
+            NSRect::new(NSPoint::new(x, f.origin.y), NSSize::new(width, PILL_H)),
+            true,
+        );
+        self.panel.invalidateShadow();
     }
 
     fn show(&self, mtm: MainThreadMarker, state: &PillState) {
-        let (label, primary, secondary, color) = match state {
+        let (short, full, primary, secondary, color) = match state {
             PillState::Hidden => {
                 self.panel.orderOut(None);
                 return;
             }
-            PillState::Recording(app, secs) => (
-                format!("Recording {:02}:{:02}  {app}", secs / 60, secs % 60),
-                "Stop",
-                None,
-                NSColor::systemRedColor(),
-            ),
+            PillState::Recording(app, secs) => {
+                let time = format!("{:02}:{:02}", secs / 60, secs % 60);
+                (time.clone(), format!("{time}  {app}"), "Stop", None, accent())
+            }
             PillState::Pending(app) => (
-                format!("Call detected  {app}"),
+                String::new(),
+                format!("Call  {app}"),
                 "Record",
                 Some("Ignore"),
                 NSColor::systemOrangeColor(),
             ),
         };
+        let recording = matches!(state, PillState::Recording(..));
+        // A recording starts compact, even under the mouse that clicked Record.
+        if recording && self.primary.action() != Some(sel!(stop:)) {
+            self.armed.set(false);
+            self.set_compact(true);
+        }
+        if !recording {
+            self.set_compact(false);
+        }
         self.dot.setTextColor(Some(&color));
-        self.label.setStringValue(&NSString::from_str(&label));
-        let width = if secondary.is_some() { 160.0 } else { 224.0 };
-        self.label
-            .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
         self.primary.setTitle(&NSString::from_str(primary));
-        let action = if matches!(state, PillState::Recording(..)) {
-            sel!(stop:)
-        } else {
-            sel!(toggle:)
-        };
+        // Record stands out in the app's green; Stop stays plain.
+        self.primary.setBezelColor((!recording).then(accent).as_deref());
+        let action = if recording { sel!(stop:) } else { sel!(record:) };
         unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));
+        *self.text.borrow_mut() = (short, full);
+        self.set_label();
         if !self.panel.isVisible() {
-            if let Some(screen) = NSScreen::mainScreen(mtm) {
+            // Where it was left (its center, as it may have been compact then), if that screen is
+            // still there; otherwise top center of the main screen.
+            let saved = self.panel.setFrameUsingName(ns_string!("pill"));
+            let f = self.panel.frame();
+            let mid = NSPoint::new(f.origin.x + f.size.width / 2.0, f.origin.y + PILL_H / 2.0);
+            let on_screen = NSScreen::screens(mtm).iter().any(|s| {
+                let v = s.visibleFrame();
+                mid.x >= v.origin.x
+                    && mid.x <= v.origin.x + v.size.width
+                    && mid.y >= v.origin.y
+                    && mid.y <= v.origin.y + v.size.height
+            });
+            if saved && on_screen {
+                self.panel.setFrame_display(
+                    NSRect::new(
+                        NSPoint::new(mid.x - PILL_W / 2.0, f.origin.y),
+                        NSSize::new(PILL_W, PILL_H),
+                    ),
+                    false,
+                );
+            } else if let Some(screen) = NSScreen::mainScreen(mtm) {
                 let f = screen.visibleFrame();
                 let x = f.origin.x + (f.size.width - PILL_W) / 2.0;
                 let y = f.origin.y + f.size.height - PILL_H - 10.0;
-                self.panel.setFrameOrigin(NSPoint::new(x, y));
+                self.panel
+                    .setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(PILL_W, PILL_H)), false);
             }
+            self.compact.set(false);
+            self.set_compact(recording);
             self.panel.orderFrontRegardless();
         }
     }

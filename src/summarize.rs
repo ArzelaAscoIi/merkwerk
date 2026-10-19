@@ -26,19 +26,22 @@ Always write the notes in English, in Markdown, in this shape:
 The reader skims: actions first, then decisions, then the few facts worth keeping.
 Rules:
 - Only `# ` headings, no `##`.
-- Next Steps: every concrete commitment, most urgent first, one line each. Drop the due date when none \
+- Next Steps: every concrete commitment, most urgent first, one line each. A commitment is something a \
+person said they will do ('I will', 'I'll bring this to', 'let me') or was asked to do and accepted. \
+Ideas, proposals, wishlist items and 'we could' are not tasks. Drop the due date when none \
 was said; drop the parentheses when the owner is also unclear. Add one indented line of context only if \
 the task is unclear without it.
-- Decisions: only what was settled, not ideas floated. Omit the section if nothing was settled.
+- Decisions: only what was settled, not ideas floated. Deferrals and rejections count ('X: moved to a \
+later iteration', 'no X for now'). Omit the section if nothing was settled.
 - Topics: at most 5, in the order discussed; merge small ones. At most 5 bullets each, one level of \
 nesting at most.
 - Bullets are fragments of at most 15 words: numbers, names, owners, dates. No filler, no restating, \
 no 'it was discussed that'.
-- Write {ME} for `me`. Owners are a single first name. Never use 'them', 'me', 'speaker' or any other \
-placeholder as an owner.
+- Write {ME} for `me`. Owners are a single first name. Never use 'them', 'me', 'speaker', 'team', \
+'everyone', 'joint effort' or any other placeholder or group as an owner.
 - `them` mixes several voices. Credit a `them` line to a named person only when the transcript ties it \
-to them (addressed by name right before, or says their name); otherwise leave the owner out. A wrong \
-owner is worse than none.
+to them (addressed by name right before, or says their name); otherwise leave the owner out. Someone \
+mentioned in a line ('then Anna releases it') is not its speaker. A wrong owner is worse than none.
 - An owner is always a person in the meeting: {ME}, someone invited, or someone the transcript shows \
 speaking. Never a company, product or glossary term.
 - Turn relative dates ('tomorrow', 'Friday', 'next week') into YYYY-MM-DD from the meeting date, no weekdays.
@@ -100,6 +103,7 @@ pub fn chat_messages(cfg: &Config, messages: Value) -> Result<String> {
     let text = resp["choices"][0]["message"]["content"]
         .as_str()
         .context("no content in LLM response")?;
+    anyhow::ensure!(!text.trim().is_empty(), "empty LLM response");
     Ok(text.trim().to_string() + "\n")
 }
 
