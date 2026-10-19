@@ -20,6 +20,15 @@ pub struct Meta {
     /// Names invited to the calendar event the recording overlaps, without the recorder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attendees: Vec<String>,
+    /// User-given labels, set from the notes window; MCP tools filter on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl Meta {
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t.eq_ignore_ascii_case(tag.trim()))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -50,6 +59,7 @@ impl Store {
             started_at: now.to_rfc3339(),
             ended_at: None,
             attendees: vec![],
+            tags: vec![],
         };
         fs::create_dir_all(self.dir(&meta.id))?;
         self.save(&meta)?;
@@ -67,6 +77,24 @@ impl Store {
     pub fn load(&self, id: &str) -> Result<Meta> {
         let raw = fs::read_to_string(self.dir(id).join("meta.json")).with_context(|| format!("no meeting {id}"))?;
         Ok(serde_json::from_str(&raw)?)
+    }
+
+    /// Replaces a meeting's tags: trimmed, empty and case-insensitive duplicates dropped.
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<Meta> {
+        // The id comes from the web page: keep it a plain directory name.
+        anyhow::ensure!(
+            !id.is_empty() && !id.contains(['/', '\\']) && !id.starts_with('.'),
+            "bad meeting id {id}"
+        );
+        let mut meta = self.load(id)?;
+        meta.tags.clear();
+        for t in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+            if !meta.tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                meta.tags.push(t.to_string());
+            }
+        }
+        self.save(&meta)?;
+        Ok(meta)
     }
 
     /// All meetings, newest first.

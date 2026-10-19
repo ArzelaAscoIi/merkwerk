@@ -110,8 +110,9 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
         })
         .collect();
     let search = format!(
-        "{} {} {}",
+        "{} {} {} {}",
         m.title,
+        m.tags.join(" "),
         summary,
         segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ")
     )
@@ -131,6 +132,7 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
             _ => String::new(),
         },
         "app": m.app.as_deref().map(app_name),
+        "tags": m.tags,
         "live": m.ended_at.is_none() && recently_written(store, m),
         "notes": (!summary.trim().is_empty()).then(|| render(&summary)),
         "lines": lines,

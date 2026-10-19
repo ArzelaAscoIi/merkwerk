@@ -59,7 +59,7 @@ pub fn record(
     let mut transcriber = Transcriber::load(cfg)?;
     let (tx, rx) = mpsc::channel();
     let mut capture = audio::start(tx)?;
-    let mut meta = store.create(title, app)?;
+    let meta = store.create(title, app)?;
     eprintln!("recording -> {}", store.dir(&meta.id).display());
 
     let (chunk_tx, chunk_rx) = mpsc::channel::<Chunk>();
@@ -101,6 +101,8 @@ pub fn record(
     }
     sink.finish()?;
 
+    // Reload: tags may have been added in the notes window while recording.
+    let mut meta = store.load(&meta.id).unwrap_or(meta);
     meta.ended_at = Some(chrono::Local::now().to_rfc3339());
     store.save(&meta)?;
     Ok(Recording { meta, worker })
