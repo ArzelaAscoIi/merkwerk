@@ -110,6 +110,8 @@ fn day_file(cfg: &Config, day: NaiveDate, ext: &str) -> PathBuf {
 
 /// Capture loop for `merkwerk watch`; never returns. Writes yesterday's work log after midnight.
 pub fn run(cfg: &Config, store: &Store) {
+    let (c, s) = (cfg.clone(), store.clone());
+    thread::spawn(move || backfill(&c, &s));
     // Off until switched on: no permission prompt, nothing read.
     while !crate::ui::SCREEN.load(std::sync::atomic::Ordering::Relaxed) {
         thread::sleep(TICK);
@@ -333,7 +335,7 @@ extracted and partial. Infer what {ME} worked on; never invent work that is not 
 
 Write in English, Markdown, in this shape:
 
-# Work log <weekday, date>
+# Work log {DAY}
 
 <2-3 sentences: what the day was about>
 
@@ -353,6 +355,26 @@ the input (about <time>)
 
 Group by project, not by app. Skip entertainment and idle noise. Omit empty sections. No preamble.";
 
+/// Writes the work log of every past day that has activity but no log, e.g. when merkwerk wasn't
+/// running at midnight.
+fn backfill(cfg: &Config, store: &Store) {
+    let today = Local::now().date_naive();
+    let Ok(dir) = fs::read_dir(dir(&cfg.root)) else {
+        return;
+    };
+    let mut days: Vec<NaiveDate> = dir
+        .flatten()
+        .filter_map(|e| e.path().file_name()?.to_str()?.strip_suffix(".jsonl")?.parse().ok())
+        .filter(|d| *d < today && !day_file(cfg, *d, "md").exists())
+        .collect();
+    days.sort();
+    for day in days {
+        if let Err(e) = write_work_log(cfg, store, day) {
+            eprintln!("work log {day}: {e:#}");
+        }
+    }
+}
+
 /// Writes and returns `activity/<day>.md` from the day's screen activity and meeting notes.
 pub fn write_work_log(cfg: &Config, store: &Store, day: NaiveDate) -> Result<String> {
     let mut input = digest(cfg, day, 400);
@@ -366,7 +388,14 @@ pub fn write_work_log(cfg: &Config, store: &Store, day: NaiveDate) -> Result<Str
         input += &format!("\n## Meeting {} ({})\n", m.title, m.id.get(11..15).unwrap_or(""));
         input += &store.read(&m.id, "summary.md").unwrap_or_default();
     }
-    let log = summarize::chat(cfg, &WORK_LOG_PROMPT.replace("{ME}", &cfg.me), &input).context("writing work log")?;
+    let log = summarize::chat(
+        cfg,
+        &WORK_LOG_PROMPT
+            .replace("{ME}", &cfg.me)
+            .replace("{DAY}", &day.format("%A, %Y-%m-%d").to_string()),
+        &input,
+    )
+    .context("writing work log")?;
     fs::create_dir_all(dir(&cfg.root))?;
     fs::write(day_file(cfg, day, "md"), &log)?;
     Ok(log)
