@@ -8,6 +8,9 @@ use std::sync::mpsc::Sender;
 
 pub const RATE: u32 = 16_000;
 
+/// Loudest sample since the UI last looked, as f32 bits (non-negative floats order like their bits).
+pub static LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
@@ -60,10 +63,12 @@ fn open(
     let stream = device.build_input_stream(
         config.into(),
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
-            let mono = data
+            let mono: Vec<f32> = data
                 .chunks(channels)
                 .map(|f| f.iter().sum::<f32>() / channels as f32)
                 .collect();
+            let peak = mono.iter().fold(0f32, |m: f32, x: &f32| m.max(x.abs()));
+            LEVEL.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);
             let _ = tx.send((source, mono));
         },
         move |e| eprintln!("audio ({}): {e}", source.label()),
