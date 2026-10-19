@@ -7,8 +7,8 @@ use crate::{
     store::Segment,
 };
 use anyhow::{Context, Result, bail};
-use parakeet_rs::{ExecutionConfig, ParakeetTDT, TimestampMode, Transcriber as _};
 use parakeet_rs::ort::environment::Environment;
+use parakeet_rs::{ExecutionConfig, ParakeetTDT, TimestampMode, Transcriber as _};
 use std::{fs, io, path::Path, sync::OnceLock};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadContext, WhisperVadContextParams,
@@ -56,7 +56,7 @@ impl Transcriber {
         let engine = match cfg.engine().as_str() {
             "parakeet" => Engine::Parakeet(Box::new(
                 ParakeetTDT::from_pretrained(&cfg.parakeet, Some(ExecutionConfig::new().with_environment(ort_env()?)))
-                .with_context(|| format!("loading Parakeet from {}", cfg.parakeet.display()))?,
+                    .with_context(|| format!("loading Parakeet from {}", cfg.parakeet.display()))?,
             )),
             engine @ ("whisper" | "whisper-v2") => {
                 let model = if engine == "whisper" { &cfg.model } else { &cfg.model_v2 };
