@@ -8,11 +8,23 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use parakeet_rs::{ExecutionConfig, ParakeetTDT, TimestampMode, Transcriber as _};
-use std::{fs, io, path::Path};
+use parakeet_rs::ort::environment::Environment;
+use std::{fs, io, path::Path, sync::OnceLock};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadContext, WhisperVadContextParams,
     WhisperVadParams,
 };
+
+/// ONNX Runtime allows one environment per process; every recording after the first reuses it.
+static ORT_ENV: OnceLock<Environment> = OnceLock::new();
+
+fn ort_env() -> Result<Environment> {
+    if let Some(env) = ORT_ENV.get() {
+        return Ok(env.clone());
+    }
+    let env = parakeet_rs::ort::init().build()?;
+    Ok(ORT_ENV.get_or_init(|| env).clone())
+}
 
 /// Audio is transcribed in chunks of this many seconds (whisper's native window).
 // Limitation: fixed cut can split a word at the boundary; cut at the quietest point if that shows up in transcripts.
@@ -43,10 +55,7 @@ impl Transcriber {
         whisper_rs::install_logging_hooks(); // silences whisper.cpp/ggml stderr chatter
         let engine = match cfg.engine().as_str() {
             "parakeet" => Engine::Parakeet(Box::new(
-                ParakeetTDT::from_pretrained(
-                    &cfg.parakeet,
-                    Some(ExecutionConfig::new().with_environment(parakeet_rs::ort::init().build()?)),
-                )
+                ParakeetTDT::from_pretrained(&cfg.parakeet, Some(ExecutionConfig::new().with_environment(ort_env()?)))
                 .with_context(|| format!("loading Parakeet from {}", cfg.parakeet.display()))?,
             )),
             "whisper" => Engine::Whisper {
@@ -202,4 +211,16 @@ fn ensure_model(path: &Path, url: &str) -> Result<()> {
 /// Whether an engine's model files are already downloaded.
 pub fn installed(cfg: &Config, engine: &str) -> bool {
     model_files(cfg, engine).iter().all(|(p, _)| p.exists())
+}
+
+#[cfg(test)]
+mod reload {
+    /// A second recording in the same process used to fail: "only one environment is allowed per process".
+    #[test]
+    #[ignore = "needs the downloaded models"]
+    fn load_twice() {
+        let cfg = crate::config::Config::from_env();
+        super::Transcriber::load(&cfg).unwrap();
+        super::Transcriber::load(&cfg).unwrap();
+    }
 }

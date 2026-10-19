@@ -165,7 +165,14 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
                 idle_since.get_or_insert_with(Instant::now).elapsed() >= CALL_IDLE
             });
             *ui::RECORDING.lock().unwrap() = None;
-            let rec = rec?;
+            // A failed recording must not take the menu bar app down with it.
+            let rec = match rec {
+                Ok(rec) => rec,
+                Err(e) => {
+                    eprintln!("recording failed: {e:#}");
+                    continue;
+                }
+            };
             eprintln!("recording ended: {}", rec.meta.id);
             // Finish in the background so a back-to-back call is still caught.
             let (cfg, store) = (cfg.clone(), store.clone());

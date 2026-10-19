@@ -145,6 +145,12 @@ define_class!(
             }
         }
 
+        /// The pill's Stop: only ever stops, so a late second click can't start a new recording.
+        #[unsafe(method(stop:))]
+        fn stop(&self, _sender: &NSObject) {
+            STOP.store(true, Ordering::Relaxed);
+        }
+
         #[unsafe(method(toggle:))]
         fn toggle(&self, _sender: &NSObject) {
             let flag = if RECORDING.lock().unwrap().is_some() { &STOP } else { &START };
@@ -756,6 +762,8 @@ impl Pill {
         self.label
             .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
         self.primary.setTitle(&NSString::from_str(primary));
+        let action = if matches!(state, PillState::Recording(..)) { sel!(stop:) } else { sel!(toggle:) };
+        unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));
         if !self.panel.isVisible() {
