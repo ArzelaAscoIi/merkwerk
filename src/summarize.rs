@@ -60,13 +60,14 @@ pub fn chat(cfg: &Config, system: &str, user: &str) -> Result<String> {
 /// A full message list (system, user, assistant, ...) against the configured endpoint.
 pub fn chat_messages(cfg: &Config, messages: Value) -> Result<String> {
     let body = json!({ "model": cfg.llm_model(), "messages": messages });
-    let mut req = ureq::post(&cfg.llm_url);
+    let url = cfg.llm_url();
+    let mut req = ureq::post(&url);
     if let Some(key) = &cfg.llm_key {
         req = req.header("Authorization", &format!("Bearer {key}"));
     }
     let resp: Value = req
         .send_json(body)
-        .with_context(|| format!("calling {}", cfg.llm_url))?
+        .with_context(|| format!("calling {url}"))?
         .body_mut()
         .read_json()?;
     let text = resp["choices"][0]["message"]["content"]

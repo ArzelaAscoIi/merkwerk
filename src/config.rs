@@ -19,8 +19,6 @@ pub struct Config {
     /// Used by the notes step to fix misrecognitions; whisper itself gets no prompt, because a
     /// glossary there biases it ("Okay" became "OKR") and the transcript should stay raw.
     pub vocab: Option<String>,
-    /// Any OpenAI-compatible chat completions endpoint (Ollama, LM Studio, OpenAI, OpenRouter...).
-    pub llm_url: String,
     pub llm_key: Option<String>,
     /// How the notes name the person recording (`me` in transcripts).
     pub me: String,
@@ -36,6 +34,11 @@ pub const PARAKEET_FILES: [&str; 3] = ["encoder-model.int8.onnx", "decoder_joint
 pub const VAD_URL: &str = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
 pub const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 pub const MODEL_V2_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2-q5_0.bin";
+/// Notes servers offered in the menu: (label, chat completions URL). The first is the default.
+pub const LLM_SERVERS: [(&str, &str); 2] = [
+    ("Ollama", "http://localhost:11434/v1/chat/completions"),
+    ("LM Studio", "http://localhost:1234/v1/chat/completions"),
+];
 
 impl Config {
     pub fn from_env() -> Self {
@@ -62,7 +65,6 @@ impl Config {
             model_v2: model.with_file_name("ggml-large-v2-q5_0.bin"),
             model,
             lang: var("MERKWERK_LANG").unwrap_or_else(|| "en,de".into()),
-            llm_url: var("MERKWERK_LLM_URL").unwrap_or_else(|| "http://localhost:11434/v1/chat/completions".into()),
             llm_key: var("MERKWERK_LLM_KEY"),
             me: var("MERKWERK_ME").unwrap_or_else(first_name),
             ignore: list(&var("MERKWERK_IGNORE").unwrap_or_else(|| "merkwerk,granola,screenpipe,openwhispr".into())),
@@ -106,6 +108,12 @@ impl Config {
         chosen(&self.root, "MERKWERK_LLM_MODEL", "llm_model", "gemma4")
     }
 
+    /// Chat completions endpoint for notes: env var, else the menu choice, else Ollama.
+    /// Any OpenAI-compatible endpoint works (Ollama, LM Studio, OpenAI, OpenRouter...).
+    pub fn llm_url(&self) -> String {
+        chosen(&self.root, "MERKWERK_LLM_URL", "llm_url", LLM_SERVERS[0].1)
+    }
+
     /// Screen activity on start: `MERKWERK_SCREEN` (0 or 1), else the menu choice, else on.
     pub fn screen_enabled(&self) -> bool {
         match std::env::var("MERKWERK_SCREEN").ok().as_deref() {
@@ -115,10 +123,11 @@ impl Config {
         }
     }
 
-    /// Ollama's model list, when the LLM endpoint is an Ollama server.
-    pub fn ollama_tags_url(&self) -> Option<String> {
-        let base = self.llm_url.split("/v1/").next()?;
-        base.contains(":11434").then(|| format!("{base}/api/tags"))
+    /// OpenAI-compatible model list (`GET /v1/models`) of the notes server.
+    pub fn models_url(&self) -> Option<String> {
+        let url = self.llm_url();
+        let (base, _) = url.split_once("/v1/")?;
+        Some(format!("{base}/v1/models"))
     }
 }
 
