@@ -779,17 +779,19 @@ impl Pill {
         let dot = text("●", 7.0, 16.0, &accent());
         dot.setAlignment(NSTextAlignment::Center);
         let label = text("", 26.0, 160.0, &NSColor::colorWithWhite_alpha(0.95, 1.0));
-        let button = |action, x: f64| {
+        let button = |action, x: f64, w: f64, size: NSControlSize| {
             let b =
                 unsafe { NSButton::buttonWithTitle_target_action(ns_string!(""), Some(handler), Some(action), mtm) };
-            b.setControlSize(NSControlSize::Small);
-            b.setFrame(NSRect::new(NSPoint::new(x, 3.0), NSSize::new(60.0, 22.0)));
+            b.setControlSize(size);
+            let h = if size == NSControlSize::Small { 22.0 } else { PILL_H };
+            b.setFrame(NSRect::new(NSPoint::new(x, (PILL_H - h) / 2.0), NSSize::new(w, h)));
             b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
             root.addSubview(&b);
             b
         };
-        let secondary = button(sel!(ignore:), PILL_W - 130.0);
-        let primary = button(sel!(record:), PILL_W - 66.0);
+        // Record is the big one: it is what a detected call is shown for.
+        let primary = button(sel!(record:), PILL_W - 100.0, 96.0, NSControlSize::Regular);
+        let secondary = button(sel!(ignore:), PILL_W - 160.0, 56.0, NSControlSize::Small);
         panel.setContentView(Some(&root));
         Pill {
             panel,
@@ -838,9 +840,9 @@ impl Pill {
         let width = if compact {
             PILL_COMPACT_W - 32.0
         } else if self.secondary.isHidden() {
-            224.0
+            190.0
         } else {
-            160.0
+            130.0
         };
         self.label
             .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
@@ -876,7 +878,7 @@ impl Pill {
             }
             PillState::Pending(app) => (
                 String::new(),
-                format!("Call detected  {app}"),
+                format!("Call  {app}"),
                 "Record",
                 Some("Ignore"),
                 NSColor::systemOrangeColor(),
@@ -893,6 +895,8 @@ impl Pill {
         }
         self.dot.setTextColor(Some(&color));
         self.primary.setTitle(&NSString::from_str(primary));
+        // Record stands out in the app's green; Stop stays plain.
+        self.primary.setBezelColor((!recording).then(accent).as_deref());
         let action = if recording { sel!(stop:) } else { sel!(record:) };
         unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
