@@ -59,7 +59,10 @@ static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
 const ENGINES: [(&str, &str); 3] = [
     ("parakeet", "Parakeet v3 (25 languages, fastest)"),
     ("whisper", "Whisper large-v3-turbo (99 languages)"),
-    ("whisper-v2", "Whisper large-v2 (99 languages, slower, often more accurate)"),
+    (
+        "whisper-v2",
+        "Whisper large-v2 (99 languages, slower, often more accurate)",
+    ),
 ];
 
 const RECENT: usize = 8;
