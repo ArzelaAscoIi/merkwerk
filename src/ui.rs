@@ -277,7 +277,10 @@ pub fn run(cfg: Config, store: Store) -> ! {
 
     let handler: Retained<Handler> = unsafe { msg_send![mtm.alloc::<Handler>(), init] };
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
-    let pill = Pill::new(mtm, &handler);
+    let pill = std::rc::Rc::new(Pill::new(mtm, &handler));
+    let meter = pill.clone();
+    let level = block2::RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| meter.level());
+    let _level_timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.1, true, &level) };
     let mut last_menu = String::new();
     let mut last_badge = String::new();
     let mut last_state = PillState::Hidden;
@@ -735,6 +738,13 @@ impl Pill {
             primary,
             secondary,
         }
+    }
+
+    /// The dot lights up with what the mic or system audio hears; dim means silence.
+    fn level(&self) {
+        let peak = f32::from_bits(crate::audio::LEVEL.swap(0, Ordering::Relaxed));
+        let alpha = if RECORDING.lock().unwrap().is_some() { (0.25 + 1.5 * peak.sqrt()).min(1.0) } else { 1.0 };
+        self.dot.setAlphaValue(alpha as f64);
     }
 
     fn show(&self, mtm: MainThreadMarker, state: &PillState) {
