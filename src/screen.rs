@@ -52,6 +52,10 @@ pub fn frontmost_app() -> Option<String> {
 /// `prepared` remembers which Chromium/Electron apps already got their accessibility tree enabled.
 pub fn snapshot(prepared: &mut HashSet<i32>) -> Option<Snapshot> {
     let front = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    // Walking our own WKWebView over AX from this thread crashes WebKit (main-thread-only API).
+    if front.processIdentifier() == std::process::id() as i32 {
+        return None;
+    }
     let app = front.localizedName().map(|n| n.to_string()).unwrap_or_default();
     let bundle = front.bundleIdentifier().map(|b| b.to_string());
     snapshot_app(front.processIdentifier(), app, bundle, prepared)
