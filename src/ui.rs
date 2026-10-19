@@ -48,8 +48,8 @@ pub static AUTO: AtomicBool = AtomicBool::new(false);
 pub static SCREEN: AtomicBool = AtomicBool::new(false);
 /// A call detected in manual mode, waiting for Record or Ignore.
 pub static PENDING: Mutex<Option<String>> = Mutex::new(None);
-/// Models installed in Ollama, refreshed in the background.
-static OLLAMA_MODELS: Mutex<Vec<String>> = Mutex::new(vec![]);
+/// Models offered by the notes server, refreshed in the background.
+static SERVER_MODELS: Mutex<Vec<String>> = Mutex::new(vec![]);
 /// Chat answers waiting to be handed to the page: (request id, answer HTML).
 static ANSWERS: Mutex<Vec<(u64, String)>> = Mutex::new(vec![]);
 /// Speech engine whose model is being downloaded.
@@ -59,7 +59,10 @@ static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
 const ENGINES: [(&str, &str); 3] = [
     ("parakeet", "Parakeet v3 (25 languages, fastest)"),
     ("whisper", "Whisper large-v3-turbo (99 languages)"),
-    ("whisper-v2", "Whisper large-v2 (99 languages, slower, often more accurate)"),
+    (
+        "whisper-v2",
+        "Whisper large-v2 (99 languages, slower, often more accurate)",
+    ),
 ];
 
 const RECENT: usize = 8;
@@ -118,6 +121,10 @@ define_class!(
                 }
                 Some(Pick::Llm(model)) => {
                     let _ = crate::config::set_setting(&cfg.root, "llm_model", model.into());
+                }
+                Some(Pick::Server(url)) => {
+                    let _ = crate::config::set_setting(&cfg.root, "llm_url", url.into());
+                    SERVER_MODELS.lock().unwrap().clear();
                 }
                 None => {}
             }
@@ -231,27 +238,34 @@ define_class!(
 enum Pick {
     Engine(String),
     Llm(String),
+    Server(String),
 }
 
-/// Keeps OLLAMA_MODELS current (every minute) when notes go to an Ollama server.
-fn watch_ollama(cfg: &Config) {
-    let Some(url) = cfg.ollama_tags_url() else { return };
+/// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
+fn watch_models(cfg: &Config) {
+    let cfg = cfg.clone();
     std::thread::spawn(move || {
         loop {
-            let names: Option<Vec<String>> = ureq::get(&url)
-                .call()
-                .ok()
-                .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
-                .and_then(|v| {
-                    v["models"]
-                        .as_array()
-                        .map(|a| a.iter().filter_map(|m| m["name"].as_str().map(String::from)).collect())
-                });
-            if let Some(mut names) = names {
-                names.sort();
-                *OLLAMA_MODELS.lock().unwrap() = names;
-            }
-            std::thread::sleep(std::time::Duration::from_secs(60));
+            // Re-read each time: the menu can switch servers.
+            let names: Option<Vec<String>> = cfg.models_url().and_then(|url| {
+                let mut req = ureq::get(&url);
+                if let Some(key) = &cfg.llm_key {
+                    req = req.header("Authorization", &format!("Bearer {key}"));
+                }
+                req.call()
+                    .ok()
+                    .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
+                    .and_then(|v| {
+                        v["data"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+                    })
+            });
+            // Empty on failure so a previous server's models don't linger.
+            let mut names = names.unwrap_or_default();
+            names.sort();
+            *SERVER_MODELS.lock().unwrap() = names;
+            std::thread::sleep(std::time::Duration::from_secs(10));
         }
     });
 }
@@ -267,7 +281,7 @@ pub fn run(cfg: Config, store: Store) -> ! {
     app.setMainMenu(Some(&main_menu(mtm)));
     set_icon(mtm, &app);
     STORE.with_borrow_mut(|s| *s = Some((cfg.clone(), store.clone())));
-    watch_ollama(&cfg);
+    watch_models(&cfg);
     open_notes(mtm);
 
     let handler: Retained<Handler> = unsafe { msg_send![mtm.alloc::<Handler>(), init] };
@@ -417,10 +431,19 @@ fn entries(store: &Store) -> Vec<Row> {
             })
             .collect();
         rows.push(Row::Choice("Speech model", speech));
+        let url = cfg.llm_url();
+        let mut servers: Vec<_> = crate::config::LLM_SERVERS
+            .iter()
+            .map(|(label, u)| (label.to_string(), *u == url, Pick::Server(u.to_string())))
+            .collect();
+        if !servers.iter().any(|s| s.1) {
+            servers.push((url.clone(), true, Pick::Server(url)));
+        }
+        rows.push(Row::Choice("Notes server", servers));
         let current = cfg.llm_model();
         // Ollama lists `gemma4` as `gemma4:latest`.
         let same = |m: &str| m == current || m.strip_suffix(":latest") == Some(current.as_str());
-        let mut models = OLLAMA_MODELS.lock().unwrap().clone();
+        let mut models = SERVER_MODELS.lock().unwrap().clone();
         if !models.iter().any(|m| same(m)) {
             models.insert(0, current.clone());
         }

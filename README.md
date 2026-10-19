@@ -29,7 +29,7 @@ no usage limits, no cloud.
 - Audio, transcripts, notes and screen activity are **plain files in `~/merkwerk`**. Nothing is
   uploaded anywhere.
 - Speech recognition runs locally (Parakeet or whisper). Notes are written by a local LLM through
-  Ollama by default.
+  Ollama (default) or LM Studio.
 - merkwerk makes exactly two kinds of network requests: the **one-time model download** from
   Hugging Face (`merkwerk model`), and calls to **the LLM endpoint you configure**, which is
   `localhost` unless you change it. No telemetry, no analytics, no update checks.
@@ -55,7 +55,7 @@ no usage limits, no cloud.
 ## Install
 
 Requirements: macOS 14.6 or newer, Apple Silicon recommended, the
-[Rust toolchain](https://rustup.rs), and [Ollama](https://ollama.com) for notes (optional; any
+[Rust toolchain](https://rustup.rs), and Ollama or LM Studio for notes (optional; any
 OpenAI-compatible endpoint works).
 
 ```sh
@@ -66,6 +66,7 @@ merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD 
 ollama pull gemma4      # the default notes model
 merkwerk                # opens the notes window and starts watching
 ```
+With LM Studio, start its local server on port 1234 from the Developer tab or with `lms server start`, and load a model.
 
 On first use macOS asks for these permissions, for the terminal or app that runs merkwerk:
 
@@ -97,7 +98,8 @@ Pick both models from the Dock or menu bar menu, no restart needed:
 - **Speech model**: Parakeet v3 (fastest, 25 languages) or Whisper large-v3-turbo / large-v2 (99 languages; v2 is slower but often more accurate).
   A model you have not used yet is downloaded in the background when you pick it; the next
   recording uses it.
-- **Notes model**: any model installed in Ollama, e.g. `gemma4:26b` for more careful notes.
+- **Notes server**: Ollama or LM Studio; the choice is saved in `~/merkwerk/settings.json`.
+- **Notes model**: any model the selected server offers, e.g. `gemma4:26b` for more careful notes.
 
 Choices are saved in `~/merkwerk/settings.json`; the environment variables below override them.
 
@@ -215,7 +217,7 @@ All settings are environment variables; the defaults are fully local.
 | `MERKWERK_ENGINE` | `parakeet` (or `whisper`, `whisper-v2`; also selectable in the menu) |
 | `MERKWERK_MODEL` | `$MERKWERK_DIR/models/ggml-large-v3-turbo-q5_0.bin` (whisper) |
 | `MERKWERK_LANG` | whisper only: `en,de` (candidate languages per utterance) |
-| `MERKWERK_LLM_URL` | `http://localhost:11434/v1/chat/completions` |
+| `MERKWERK_LLM_URL` | `http://localhost:11434/v1/chat/completions` (overrides the Notes server menu choice) |
 | `MERKWERK_LLM_MODEL` | `gemma4` (also selectable in the menu) |
 | `MERKWERK_LLM_KEY` | unset (Bearer token for hosted APIs) |
 | `MERKWERK_ME` | first name of your macOS account (how notes refer to you) |
