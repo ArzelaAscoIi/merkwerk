@@ -44,7 +44,7 @@ no usage limits, no cloud.
 | **Always visible** | While recording, a floating pill shows `● Recording 03:12` on every desktop, the Dock icon carries a `REC` badge, and the menu bar shows a timer. |
 | **Call detection** | Notices when Zoom, Meet, Teams, Slack, FaceTime or any other app starts using the microphone, without bots joining your call. |
 | **Both sides of the call** | Records your microphone as `me` and the system audio as `them`. |
-| **Local transcription** | NVIDIA Parakeet TDT 0.6B v3 (25 languages, punctuation, automatic language detection) or whisper large-v3-turbo. Silero VAD filters silence so the models don't invent text. Live, in 30 second chunks. |
+| **Local transcription** | NVIDIA Parakeet TDT 0.6B v3 (25 languages, punctuation, automatic language detection) or whisper (large-v3-turbo or large-v2). Silero VAD filters silence so the models don't invent text. Live, in 30 second chunks. |
 | **Meeting notes** | Topic sections and next steps with owners, in English, from any OpenAI-compatible LLM. |
 | **Ask** | Chat with a meeting while it runs or afterwards: "What did I miss?", "My action items", answers cite timestamps. Works for a day's work log too. |
 | **Screen activity** | Reads the text of the window you are working in through macOS Accessibility: app, window title, URL, content. No screenshots, no OCR. |
@@ -94,7 +94,7 @@ the background, so a back-to-back call is still caught.
 
 Pick both models from the Dock or menu bar menu, no restart needed:
 
-- **Speech model**: Parakeet v3 (fastest, 25 languages) or Whisper large-v3-turbo (99 languages).
+- **Speech model**: Parakeet v3 (fastest, 25 languages) or Whisper large-v3-turbo / large-v2 (99 languages; v2 is slower but often more accurate).
   A model you have not used yet is downloaded in the background when you pick it; the next
   recording uses it.
 - **Notes model**: any model installed in Ollama, e.g. `gemma4:26b` for more careful notes.
@@ -212,7 +212,7 @@ All settings are environment variables; the defaults are fully local.
 | Variable | Default |
 |---|---|
 | `MERKWERK_DIR` | `~/merkwerk` |
-| `MERKWERK_ENGINE` | `parakeet` (or `whisper`; also selectable in the menu) |
+| `MERKWERK_ENGINE` | `parakeet` (or `whisper`, `whisper-v2`; also selectable in the menu) |
 | `MERKWERK_MODEL` | `$MERKWERK_DIR/models/ggml-large-v3-turbo-q5_0.bin` (whisper) |
 | `MERKWERK_LANG` | whisper only: `en,de` (candidate languages per utterance) |
 | `MERKWERK_LLM_URL` | `http://localhost:11434/v1/chat/completions` |
@@ -249,7 +249,7 @@ Face, and they keep their own licenses:
 | Model | Author | License | Source |
 |---|---|---|---|
 | Parakeet TDT 0.6B v3 | NVIDIA | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) | [nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), used as the int8 ONNX conversion by [istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx) (CC-BY-4.0) |
-| Whisper large-v3-turbo (ggml) | OpenAI, converted by the whisper.cpp project | MIT | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) |
+| Whisper large-v3-turbo / large-v2 (ggml) | OpenAI, converted by the whisper.cpp project | MIT | [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) |
 | Silero VAD v5 (ggml) | Silero Team, converted by ggml-org | MIT | [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad) |
 
 The default notes model, Gemma 4 by Google, is installed through Ollama and licensed under

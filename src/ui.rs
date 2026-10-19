@@ -56,9 +56,10 @@ static ANSWERS: Mutex<Vec<(u64, String)>> = Mutex::new(vec![]);
 static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
 
 /// Speech engines offered in the menu: id and label.
-const ENGINES: [(&str, &str); 2] = [
+const ENGINES: [(&str, &str); 3] = [
     ("parakeet", "Parakeet v3 (25 languages, fastest)"),
     ("whisper", "Whisper large-v3-turbo (99 languages)"),
+    ("whisper-v2", "Whisper large-v2 (99 languages, slower, often more accurate)"),
 ];
 
 const RECENT: usize = 8;
