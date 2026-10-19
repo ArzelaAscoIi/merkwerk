@@ -750,6 +750,9 @@ impl Pill {
         panel.setOpaque(false);
         panel.setHasShadow(true);
         panel.setBackgroundColor(Some(&NSColor::clearColor()));
+        // Drag it anywhere, on any screen; AppKit saves where it was left under this name.
+        panel.setMovableByWindowBackground(true);
+        panel.setFrameAutosaveName(ns_string!("pill"));
 
         let root = NSView::initWithFrame(mtm.alloc(), rect);
         let background = NSBox::initWithFrame(mtm.alloc(), rect);
@@ -897,11 +900,32 @@ impl Pill {
         *self.text.borrow_mut() = (short, full);
         self.set_label();
         if !self.panel.isVisible() {
-            if let Some(screen) = NSScreen::mainScreen(mtm) {
+            // Where it was left (its center, as it may have been compact then), if that screen is
+            // still there; otherwise top center of the main screen.
+            let saved = self.panel.setFrameUsingName(ns_string!("pill"));
+            let f = self.panel.frame();
+            let mid = NSPoint::new(f.origin.x + f.size.width / 2.0, f.origin.y + PILL_H / 2.0);
+            let on_screen = NSScreen::screens(mtm).iter().any(|s| {
+                let v = s.visibleFrame();
+                mid.x >= v.origin.x
+                    && mid.x <= v.origin.x + v.size.width
+                    && mid.y >= v.origin.y
+                    && mid.y <= v.origin.y + v.size.height
+            });
+            if saved && on_screen {
+                self.panel.setFrame_display(
+                    NSRect::new(
+                        NSPoint::new(mid.x - PILL_W / 2.0, f.origin.y),
+                        NSSize::new(PILL_W, PILL_H),
+                    ),
+                    false,
+                );
+            } else if let Some(screen) = NSScreen::mainScreen(mtm) {
                 let f = screen.visibleFrame();
                 let x = f.origin.x + (f.size.width - PILL_W) / 2.0;
                 let y = f.origin.y + f.size.height - PILL_H - 10.0;
-                self.panel.setFrameOrigin(NSPoint::new(x, y));
+                self.panel
+                    .setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(PILL_W, PILL_H)), false);
             }
             self.compact.set(false);
             self.set_compact(recording);
