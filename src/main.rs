@@ -181,12 +181,13 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
             eprintln!("recording ended: {}", rec.meta.id);
             // Finish in the background so a back-to-back call is still caught.
             let (cfg, store) = (cfg.clone(), store.clone());
-            ui::FINISHING.fetch_add(1, Ordering::Relaxed);
+            let id = rec.meta.id.clone();
+            ui::FINISHING.lock().unwrap().push(id.clone());
             thread::spawn(move || {
                 if let Err(e) = rec.finish(&cfg, &store) {
                     eprintln!("finish: {e:#}");
                 }
-                ui::FINISHING.fetch_sub(1, Ordering::Relaxed);
+                ui::FINISHING.lock().unwrap().retain(|f| *f != id);
             });
         }
         // Detecting a call 2 s later is fine and halves the CoreAudio queries.

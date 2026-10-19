@@ -8,7 +8,7 @@ use crate::{
     summarize,
     transcribe::{CHUNK_SECS, Transcriber},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use hound::{WavReader, WavSpec, WavWriter};
 use std::{
     fs::{self, File},
@@ -211,9 +211,10 @@ fn cut(samples: &[f32]) -> usize {
 pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     let transcript = store.transcript(id);
     store.write(id, "transcript.md", &transcript)?;
+    // Nothing was said (a misclick, or a call that never got going): don't keep it.
     if transcript.trim().is_empty() {
-        eprintln!("{id}: empty transcript, no summary");
-        return Ok(());
+        eprintln!("{id}: empty transcript, deleted");
+        return std::fs::remove_dir_all(store.dir(id)).context("deleting empty recording");
     }
     let mut meta = store.load(id)?;
     let secs = |t: &str| {

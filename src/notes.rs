@@ -52,6 +52,7 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
         .map(|d| d.as_secs() / 60);
     minute.hash(&mut h);
     live.hash(&mut h);
+    crate::ui::FINISHING.lock().unwrap().hash(&mut h);
     // "Today" and "Yesterday" labels change at midnight.
     Local::now().date_naive().hash(&mut h);
     h.finish()
@@ -84,7 +85,7 @@ pub fn data(cfg: &Config, store: &Store) -> String {
                 let md = std::fs::metadata(store.dir(&m.id).join(file)).ok();
                 md.as_ref().map(|md| (md.len(), md.modified().ok())).hash(&mut h);
             }
-            (recently_written(store, m), today).hash(&mut h);
+            (recently_written(store, m), writing(&m.id), today).hash(&mut h);
             let key = h.finish();
             match cache.get(&m.id) {
                 Some((k, v)) if *k == key => v.clone(),
@@ -139,6 +140,7 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
         },
         "app": m.app.as_deref().map(app_name),
         "live": m.ended_at.is_none() && recently_written(store, m),
+        "writing": writing(&m.id),
         "notes": (!summary.trim().is_empty()).then(|| render(&summary)),
         "lines": lines,
         "search": search,
@@ -217,6 +219,11 @@ fn day_label(start: DateTime<FixedOffset>, today: chrono::NaiveDate) -> String {
 }
 
 /// No end time and audio written in the last seconds; a crashed recording has no end time either.
+/// Whether this app is still transcribing / summarizing the meeting.
+fn writing(id: &str) -> bool {
+    crate::ui::FINISHING.lock().unwrap().iter().any(|f| f == id)
+}
+
 fn recently_written(store: &Store, m: &Meta) -> bool {
     recent(&store.wav_path(&m.id, crate::audio::Source::Me))
 }
