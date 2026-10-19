@@ -1,6 +1,7 @@
 mod activity;
 mod ask;
 mod audio;
+mod calendar;
 mod config;
 mod detect;
 mod mcp;
@@ -218,6 +219,7 @@ fn install() -> Result<()> {
   <key>LSMinimumSystemVersion</key><string>14.6</string>
   <key>NSMicrophoneUsageDescription</key><string>merkwerk transcribes your side of calls locally.</string>
   <key>NSAudioCaptureUsageDescription</key><string>merkwerk transcribes the other side of calls locally.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>merkwerk names meetings and their participants from your calendar.</string>
 </dict></plist>
 "#,
         env!("CARGO_PKG_VERSION")

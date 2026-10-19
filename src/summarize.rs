@@ -1,47 +1,74 @@
 //! Meeting notes from a transcript via any OpenAI-compatible chat endpoint.
 
-use crate::config::Config;
+use crate::{config::Config, store::Meta};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 const PROMPT: &str = "You write meeting notes from a raw transcript.
 
 Transcript lines are `[hh:mm:ss] speaker: text`. `me` is {ME}, who recorded the meeting; `them` is everyone \
-else (one or several people; use names when the conversation reveals them). The transcript is machine \
+else (one or several people; use names when the conversation or the invite list reveals them). The transcript is machine \
 generated and can be German, English or mixed, with recognition errors: infer intent, never invent facts.
 
 Always write the notes in English, in Markdown, in this shape:
 
 # <short descriptive title for the whole meeting>
 
-# <Topic>
-- terse bullets with the concrete facts: numbers, names, decisions, open questions
-  - nested bullets for detail or examples
-
-(one `# <Topic>` section per topic discussed, in the order discussed)
-
 # Next Steps
-- **<task>** (<owner first name>)
+- **<task, starting with a verb>** (<owner first name>, <due date>)
 
-  <one line of context, including any deadline>
+# Decisions
+- <one line per decision actually agreed>
 
+# <topic name>
+- <fact>
+
+The reader skims: actions first, then decisions, then the few facts worth keeping.
 Rules:
 - Only `# ` headings, no `##`.
-- Write {ME} for `me`. The owner is a single first name in parentheses; omit the parentheses entirely \
-when the owner is unclear. Never use 'them' or 'me' as an owner.
+- Next Steps: every concrete commitment, most urgent first, one line each. Drop the due date when none \
+was said; drop the parentheses when the owner is also unclear. Add one indented line of context only if \
+the task is unclear without it.
+- Decisions: only what was settled, not ideas floated. Omit the section if nothing was settled.
+- Topics: at most 5, in the order discussed; merge small ones. At most 5 bullets each, one level of \
+nesting at most.
+- Bullets are fragments of at most 15 words: numbers, names, owners, dates. No filler, no restating, \
+no 'it was discussed that'.
+- Write {ME} for `me`. Owners are a single first name. Never use 'them', 'me', 'speaker' or any other \
+placeholder as an owner.
+- `them` mixes several voices. Credit a `them` line to a named person only when the transcript ties it \
+to them (addressed by name right before, or says their name); otherwise leave the owner out. A wrong \
+owner is worse than none.
+- An owner is always a person in the meeting: {ME}, someone invited, or someone the transcript shows \
+speaking. Never a company, product or glossary term.
+- Turn relative dates ('tomorrow', 'Friday', 'next week') into YYYY-MM-DD from the meeting date, no weekdays.
 - Fix obvious misrecognitions using the glossary below and context; keep product and customer names exact.
-- Skip small talk. No preamble.{VOCAB}";
+- Skip small talk and weekend chat. No preamble, no closing summary.
+
+Meeting date: {DATE}{ATTENDEES}{VOCAB}";
 
 // Limitation: whole transcript in one request; add map-reduce over chunks if transcripts outgrow the model context.
-pub fn summarize(cfg: &Config, transcript: &str) -> Result<String> {
+pub fn summarize(cfg: &Config, meta: &Meta, transcript: &str) -> Result<String> {
     let vocab = cfg
         .vocab
         .as_ref()
-        .map(|v| format!("\n\nGlossary: {v}"))
+        .map(|v| format!("\nGlossary (spellings only; these terms say nothing about this meeting): {v}"))
         .unwrap_or_default();
+    let attendees = if meta.attendees.is_empty() {
+        String::new()
+    } else {
+        format!("\nInvited: {}", meta.attendees.join(", "))
+    };
+    let date = chrono::DateTime::parse_from_rfc3339(&meta.started_at)
+        .map(|t| t.format("%A, %Y-%m-%d").to_string())
+        .unwrap_or_else(|_| meta.started_at.clone());
     chat(
         cfg,
-        &PROMPT.replace("{ME}", &cfg.me).replace("{VOCAB}", &vocab),
+        &PROMPT
+            .replace("{ME}", &cfg.me)
+            .replace("{DATE}", &date)
+            .replace("{ATTENDEES}", &attendees)
+            .replace("{VOCAB}", &vocab),
         transcript,
     )
 }

@@ -4,7 +4,7 @@
 use crate::audio::Source;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Write, path::PathBuf};
+use std::{collections::HashSet, fs, io::Write, path::PathBuf};
 
 /// Placeholder title; replaced by the title from the generated notes.
 pub const UNTITLED: &str = "Untitled";
@@ -17,6 +17,9 @@ pub struct Meta {
     pub app: Option<String>,
     pub started_at: String,
     pub ended_at: Option<String>,
+    /// Names invited to the calendar event the recording overlaps, without the recorder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -46,6 +49,7 @@ impl Store {
             app,
             started_at: now.to_rfc3339(),
             ended_at: None,
+            attendees: vec![],
         };
         fs::create_dir_all(self.dir(&meta.id))?;
         self.save(&meta)?;
@@ -88,12 +92,12 @@ impl Store {
         Ok(())
     }
 
-    /// Segments sorted by time. Works mid-meeting too (the jsonl grows live).
+    /// Segments sorted by time, echo dropped. Works mid-meeting too (the jsonl grows live).
     pub fn segments(&self, id: &str) -> Vec<Segment> {
         let raw = fs::read_to_string(self.dir(id).join("transcript.jsonl")).unwrap_or_default();
         let mut segs: Vec<Segment> = raw.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
         segs.sort_by(|a, b| a.start.total_cmp(&b.start));
-        segs
+        drop_echo(segs)
     }
 
     /// `[00:01:23] me: text` lines.
@@ -114,6 +118,41 @@ impl Store {
     }
 }
 
+/// The mic also hears the speakers, so remote speech lands twice: on `them` from system audio and,
+/// slightly garbled, on `me`. Drops `me` segments whose words mostly occur in `them` speech around
+/// the same time. Raw segments stay in transcript.jsonl.
+// ponytail: word-overlap heuristic; switch the mic to Apple's voice-processing unit (real echo
+// cancellation) if it drops genuine `me` speech that echoes what was just said.
+fn drop_echo(segs: Vec<Segment>) -> Vec<Segment> {
+    const SLACK: f64 = 3.0; // seconds; the two streams drift a little
+    fn words(t: &str) -> Vec<String> {
+        t.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    }
+    let them: Vec<(f64, f64, HashSet<String>)> = segs
+        .iter()
+        .filter(|s| s.source == Source::Them)
+        .map(|s| (s.start, s.end, words(&s.text).into_iter().collect()))
+        .collect();
+    segs.into_iter()
+        .filter(|s| {
+            if s.source != Source::Me {
+                return true;
+            }
+            let near: HashSet<&String> = them
+                .iter()
+                .filter(|(start, end, _)| *start <= s.end + SLACK && *end >= s.start - SLACK)
+                .flat_map(|(_, _, w)| w)
+                .collect();
+            let w = words(&s.text);
+            let echoed = w.iter().filter(|x| near.contains(x)).count();
+            w.is_empty() || echoed * 10 < w.len() * 6
+        })
+        .collect()
+}
+
 pub fn render(segments: &[Segment]) -> String {
     segments
         .iter()
@@ -129,4 +168,37 @@ pub fn render(segments: &[Segment]) -> String {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(source: Source, start: f64, text: &str) -> Segment {
+        Segment {
+            source,
+            start,
+            end: start + 4.0,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn drops_mic_echo_of_remote_speech_only() {
+        let segs = vec![
+            seg(
+                Source::Them,
+                0.0,
+                "The build finished green, and then the deploy went out at noon.",
+            ),
+            seg(Source::Me, 1.0, "The build finish green."), // echo, slightly garbled
+            seg(Source::Me, 2.5, "And then the deploy went out at noon."), // echo
+            seg(Source::Me, 30.0, "Which region did it roll out to first?"), // own speech, them silent
+            seg(Source::Me, 3.0, "Wait, was that the staging cluster?"), // own speech over them
+        ];
+        let kept: Vec<_> = drop_echo(segs).into_iter().map(|s| s.text).collect();
+        assert_eq!(kept.len(), 3, "{kept:?}");
+        assert!(kept.iter().any(|t| t.contains("region")));
+        assert!(kept.iter().any(|t| t.contains("staging")));
+    }
 }
