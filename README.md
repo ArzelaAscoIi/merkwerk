@@ -161,10 +161,10 @@ claude mcp add merkwerk -- merkwerk mcp
 
 | Tool | Returns |
 |---|---|
-| `list_meetings` | meetings, newest first |
+| `list_meetings` | meetings, newest first; filter by `tag` |
 | `get_meetings` | metadata and notes for meeting ids |
 | `get_meeting_transcript` | the full transcript, paged, also while a meeting is running |
-| `search_meetings` | text search across transcripts and notes |
+| `search_meetings` | text search across transcripts and notes; filter by `tag` |
 | `get_activity` | a day's window sessions with text excerpts |
 | `get_work_log` | the day's work log (written on first request) |
 | `search_activity` | everything you had on screen, by keyword |
@@ -203,7 +203,7 @@ claude mcp add merkwerk -- merkwerk mcp
   settings.json                 recording mode, screen activity switch, model choices
   vocab.txt                     optional: names and terms, one per line, for correct spelling in notes
   2026-10-16_100000/            one folder per meeting
-    meta.json                   title, app, start, end
+    meta.json                   title, app, start, end, tags
     me.wav  them.wav            audio, 16 kHz mono
     transcript.jsonl            segments {source, start, end, text}, grows live
     transcript.md               [hh:mm:ss] me|them: text

@@ -20,6 +20,15 @@ pub struct Meta {
     /// Names invited to the calendar event the recording overlaps, without the recorder.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attendees: Vec<String>,
+    /// User-given labels, set from the notes window; MCP tools filter on them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl Meta {
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t.eq_ignore_ascii_case(tag.trim()))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -50,6 +59,7 @@ impl Store {
             started_at: now.to_rfc3339(),
             ended_at: None,
             attendees: vec![],
+            tags: vec![],
         };
         fs::create_dir_all(self.dir(&meta.id))?;
         self.save(&meta)?;
@@ -67,6 +77,55 @@ impl Store {
     pub fn load(&self, id: &str) -> Result<Meta> {
         let raw = fs::read_to_string(self.dir(id).join("meta.json")).with_context(|| format!("no meeting {id}"))?;
         Ok(serde_json::from_str(&raw)?)
+    }
+
+    /// Loads a meeting for an edit from the notes window.
+    fn load_editable(&self, id: &str) -> Result<Meta> {
+        // The id comes from the web page: keep it a plain directory name.
+        anyhow::ensure!(
+            !id.is_empty() && !id.contains(['/', '\\']) && !id.starts_with('.'),
+            "bad meeting id {id}"
+        );
+        self.load(id)
+    }
+
+    /// Renames a meeting; the title is trimmed and must not be empty.
+    pub fn set_title(&self, id: &str, title: &str) -> Result<Meta> {
+        let title = title.trim();
+        anyhow::ensure!(!title.is_empty(), "empty title");
+        let mut meta = self.load_editable(id)?;
+        meta.title = title.to_string();
+        self.save(&meta)?;
+        Ok(meta)
+    }
+
+    /// Replaces a meeting's tags: trimmed, empty and case-insensitive duplicates dropped.
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<Meta> {
+        let mut meta = self.load_editable(id)?;
+        meta.tags.clear();
+        for t in tags.iter().map(|t| t.trim()).filter(|t| !t.is_empty()) {
+            if !meta.tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                meta.tags.push(t.to_string());
+            }
+        }
+        self.save(&meta)?;
+        Ok(meta)
+    }
+
+    /// Still recording: no end time and audio written in the last seconds (a crashed recording
+    /// has no end time either).
+    pub fn live(&self, m: &Meta) -> bool {
+        m.ended_at.is_none() && recent(&self.wav_path(&m.id, Source::Me))
+    }
+
+    /// Moves a meeting's directory to the macOS Trash, so a mistaken delete can be undone in Finder.
+    pub fn trash(&self, id: &str) -> Result<()> {
+        let meta = self.load_editable(id)?;
+        anyhow::ensure!(!self.live(&meta), "{id} is still recording");
+        let url = objc2_foundation::NSURL::from_directory_path(self.dir(id)).context("meeting path")?;
+        objc2_foundation::NSFileManager::defaultManager()
+            .trashItemAtURL_resultingItemURL_error(&url, None)
+            .map_err(|e| anyhow::anyhow!("trash {id}: {}", e.localizedDescription()))
     }
 
     /// All meetings, newest first.
@@ -129,6 +188,13 @@ impl Store {
     pub fn wav_path(&self, id: &str, source: Source) -> PathBuf {
         self.dir(id).join(format!("{}.wav", source.label()))
     }
+}
+
+/// Modified in the last 15 seconds.
+pub fn recent(path: &std::path::Path) -> bool {
+    fs::metadata(path)
+        .and_then(|md| md.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|e| e.as_secs() < 15))
 }
 
 /// The mic also hears the speakers, so remote speech lands twice: on `them` from system audio and,

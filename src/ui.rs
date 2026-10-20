@@ -174,8 +174,8 @@ define_class!(
 );
 
 define_class!(
-    /// Receives chat questions and Start/Stop recording from the notes page
-    /// (`window.webkit.messageHandlers.merkwerk`).
+    /// Receives chat questions, tag/title edits, deletes and Start/Stop recording from the notes
+    /// page (`window.webkit.messageHandlers.merkwerk`).
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "MerkwerkChatBridge"]
@@ -205,6 +205,28 @@ define_class!(
             let Some((cfg, store)) = STORE.with_borrow(|s| s.clone()) else {
                 return;
             };
+            // Tag edit: a small file write, done right here; the next refresh shows it everywhere.
+            if let Some(tags) = req["tags"].as_array() {
+                let tags: Vec<String> = tags.iter().filter_map(|t| Some(t.as_str()?.to_string())).collect();
+                if let Err(e) = store.set_tags(req["target"].as_str().unwrap_or_default(), &tags) {
+                    eprintln!("tags: {e:#}");
+                }
+                return;
+            }
+            if let Some(title) = req["title"].as_str() {
+                if let Err(e) = store.set_title(req["target"].as_str().unwrap_or_default(), title) {
+                    eprintln!("title: {e:#}");
+                }
+                return;
+            }
+            if req["delete"] == true {
+                if let Err(e) = store.trash(req["target"].as_str().unwrap_or_default()) {
+                    eprintln!("delete: {e:#}");
+                    // The page already dropped the row; nothing changed on disk, so force a resend.
+                    NOTES.with_borrow_mut(|n| n.as_mut().map(|(_, _, shown)| *shown = 0));
+                }
+                return;
+            }
             // The LLM takes seconds: answer off the main thread, deliver on the next tick.
             std::thread::spawn(move || {
                 let id = req["id"].as_u64().unwrap_or(0);

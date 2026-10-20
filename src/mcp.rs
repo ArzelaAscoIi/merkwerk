@@ -62,9 +62,10 @@ fn tools() -> Value {
     json!([
         {
             "name": "list_meetings",
-            "description": "List recorded meetings, newest first. Returns id, title, start/end time and the app that triggered the recording.",
+            "description": "List recorded meetings, newest first. Returns id, title, tags, start/end time and the app that triggered the recording.",
             "inputSchema": {"type": "object", "properties": {
                 "since": {"type": "string", "description": "Only meetings on or after this date (YYYY-MM-DD)."},
+                "tag": {"type": "string", "description": "Only meetings with this tag (case-insensitive)."},
                 "limit": {"type": "integer", "description": "Max meetings to return (default 50)."},
             }},
         },
@@ -113,6 +114,7 @@ fn tools() -> Value {
             "description": "Case-insensitive text search across all transcripts and summaries. Returns matching lines per meeting.",
             "inputSchema": {"type": "object", "required": ["query"], "properties": {
                 "query": {"type": "string"},
+                "tag": {"type": "string", "description": "Only search meetings with this tag (case-insensitive)."},
             }},
         },
     ])
@@ -122,11 +124,12 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
     let text = match name {
         "list_meetings" => {
             let since = args["since"].as_str().unwrap_or("");
+            let tag = args["tag"].as_str();
             let limit = args["limit"].as_u64().unwrap_or(50) as usize;
             let list: Vec<_> = store
                 .list()
                 .into_iter()
-                .filter(|m| m.id.as_str() >= since)
+                .filter(|m| m.id.as_str() >= since && tag.is_none_or(|t| m.has_tag(t)))
                 .take(limit)
                 .collect();
             serde_json::to_string_pretty(&list)?
@@ -152,7 +155,8 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
         "search_meetings" => {
             let q = args["query"].as_str().context("query required")?.to_lowercase();
             let mut out = String::new();
-            for meta in store.list() {
+            let tag = args["tag"].as_str();
+            for meta in store.list().into_iter().filter(|m| tag.is_none_or(|t| m.has_tag(t))) {
                 let text = store.read(&meta.id, "summary.md").unwrap_or_default() + &store.transcript(&meta.id);
                 let hits: Vec<&str> = text
                     .lines()
@@ -244,5 +248,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 7);
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn tags_normalize_and_filter_meetings() {
+        let root = std::env::temp_dir().join(format!("merkwerk-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store { root: root.clone() };
+        let a = store.create("A", None).unwrap();
+        let meta = store
+            .set_tags(&a.id, &[" Sales ".into(), "sales".into(), "".into(), "Q4".into()])
+            .unwrap();
+        assert_eq!(meta.tags, ["Sales", "Q4"]);
+        assert!(store.set_tags("../x", &[]).is_err());
+        assert_eq!(
+            store.set_title(&a.id, "  Pipeline review ").unwrap().title,
+            "Pipeline review"
+        );
+        assert!(store.set_title(&a.id, " ").is_err());
+        assert!(store.set_title("../x", "y").is_err());
+        // Trash guards run before anything moves: bad ids and live recordings are refused.
+        assert!(store.trash("../x").is_err());
+        std::fs::write(store.wav_path(&a.id, crate::audio::Source::Me), b"").unwrap();
+        assert!(store.trash(&a.id).unwrap_err().to_string().contains("still recording"));
+        let cfg = Config::from_env();
+        let tagged = call(&cfg, &store, "list_meetings", &json!({"tag": "SALES"})).unwrap();
+        assert!(tagged.contains(&a.id));
+        let none = call(&cfg, &store, "list_meetings", &json!({"tag": "hr"})).unwrap();
+        assert_eq!(none, "[]");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
