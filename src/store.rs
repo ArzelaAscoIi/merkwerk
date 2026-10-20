@@ -166,7 +166,7 @@ fn drop_echo(segs: Vec<Segment>) -> Vec<Segment> {
         .collect()
 }
 
-/// "Ole Example" -> "Ole"; an invitee without a display name is an address: "ole.x@co" -> "ole.x".
+/// "Ada Lovelace" -> "Ada"; an invitee without a display name is an address: "ada.l@co" -> "ada.l".
 fn first_name(invitee: &str) -> Option<String> {
     invitee
         .split(|c: char| c.is_whitespace() || c == '@')
