@@ -67,7 +67,13 @@ impl Config {
             lang: var("MERKWERK_LANG").unwrap_or_else(|| "en,de".into()),
             llm_key: var("MERKWERK_LLM_KEY"),
             me: var("MERKWERK_ME").unwrap_or_else(first_name),
-            ignore: list(&var("MERKWERK_IGNORE").unwrap_or_else(|| "merkwerk,screenpipe,openwhispr".into())),
+            // Apps whose mic use is not a call: env, else `ignore` in settings.json.
+            ignore: list(&chosen(
+                &root,
+                "MERKWERK_IGNORE",
+                "ignore",
+                "merkwerk,screenpipe,openwhispr",
+            )),
             screen_ignore: list(&format!(
                 "{},{}",
                 crate::screen::DEFAULT_IGNORE,
