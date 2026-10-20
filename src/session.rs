@@ -209,10 +209,8 @@ fn cut(samples: &[f32]) -> usize {
 /// Write transcript.md and summary.md. Untitled meetings take the calendar event's title, else
 /// the summary's; the event's invitees are kept in meta.json and given to the notes step.
 pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
-    let transcript = store.transcript(id);
-    store.write(id, "transcript.md", &transcript)?;
     // Nothing was said (a misclick, or a call that never got going): don't keep it.
-    if transcript.trim().is_empty() {
+    if store.transcript(id).trim().is_empty() {
         eprintln!("{id}: empty transcript, deleted");
         return std::fs::remove_dir_all(store.dir(id)).context("deleting empty recording");
     }
@@ -232,6 +230,9 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
         meta.attendees = event.attendees;
         store.save(&meta)?;
     }
+    // Rendered after the calendar lookup: a 1:1's invitee names the `them` lines.
+    let transcript = store.transcript(id);
+    store.write(id, "transcript.md", &transcript)?;
     let summary = summarize::summarize(cfg, &meta, &transcript)?;
     store.write(id, "summary.md", &summary)?;
     if meta.title == store::UNTITLED
