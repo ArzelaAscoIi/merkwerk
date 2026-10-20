@@ -17,6 +17,8 @@
     --select: #e2e7e4;
     --accent: #0f7a5c;
     --rec: #c8372d;
+    /* text on accent and rec buttons */
+    --on-accent: #fff;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   }
@@ -32,6 +34,8 @@
       --select: #1f2a25;
       --accent: #3cc497;
       --rec: #ef6b5f;
+      /* the dark-mode accent and rec are light: white text on them is unreadable */
+      --on-accent: #0b1a15;
     }
   }
   * { box-sizing: border-box; }
@@ -52,14 +56,14 @@
   .search { padding: 18px 14px 10px; }
   #rec {
     display: block; width: calc(100% - 28px); margin: 18px 14px 0; font: inherit; font-weight: 500;
-    color: #fff; background: var(--accent); border: 0; border-radius: 8px; padding: 7px 10px; cursor: default;
+    color: var(--on-accent); background: var(--accent); border: 0; border-radius: 8px; padding: 7px 10px; cursor: default;
   }
   #rec.on { background: var(--rec); }
   #rec[hidden] { display: none; }
   .tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 12px 14px 0; }
   #blocked { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px; color: var(--text);
     background: color-mix(in srgb, var(--rec) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--rec) 35%, transparent); }
-  #blocked button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: #fff; background: var(--rec);
+  #blocked button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--on-accent); background: var(--rec);
     border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
   #blocked[hidden] { display: none; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -184,7 +188,7 @@
   }
   .ask textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
   .ask button {
-    font: inherit; font-size: 14px; color: #fff; background: var(--accent); border: 0;
+    font: inherit; font-size: 14px; color: var(--on-accent); background: var(--accent); border: 0;
     border-radius: 8px; padding: 0 16px; cursor: default;
   }
   .ask button:disabled { opacity: 0.5; }

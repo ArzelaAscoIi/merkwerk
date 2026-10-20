@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot.png" width="860" alt="merkwerk notes window showing meeting notes with next steps">
+  <img src="assets/screenshot.png" width="860" alt="merkwerk notes window: meetings by day, a meeting with tags, next steps with owners and dates, decisions and topics">
 </p>
 
 ---
@@ -41,15 +41,16 @@ no usage limits, no cloud.
 | | |
 |---|---|
 | **Recording on your terms** | Manual by default: when a call starts, merkwerk asks. Turn on auto-recording if you want every call captured, and opt out of any single call with one click. |
-| **Always visible** | While recording, a floating pill shows `● Recording 03:12` on every desktop, the Dock icon carries a `REC` badge, and the menu bar shows a timer. |
+| **Always visible, never in the way** | While recording, a small floating pill shows a breathing dot and the time on every desktop; hover it for the app and **Stop**, drag it wherever you like. The Dock icon carries a `REC` badge and the menu bar shows a timer. |
 | **Call detection** | Notices when Zoom, Meet, Teams, Slack, FaceTime or any other app starts using the microphone, without bots joining your call. |
-| **Both sides of the call** | Records your microphone as `me` and the system audio as `them`. |
+| **Both sides of the call** | Records your microphone as `me` and the system audio as `them`; in a 1:1 with a calendar invite, `them` carries the other person's name. |
 | **Local transcription** | NVIDIA Parakeet TDT 0.6B v3 (25 languages, punctuation, automatic language detection) or whisper (large-v3-turbo or large-v2). Silero VAD filters silence so the models don't invent text. Live, in 30 second chunks. |
-| **Meeting notes** | Next steps with owners and dates first, then decisions and short topic sections, in English, from any OpenAI-compatible LLM. |
+| **Meeting notes** | Next steps with owners and dates first, then decisions and short topic sections, in English, from any OpenAI-compatible LLM. The calendar event names the meeting and its invitees. |
 | **Ask** | Chat with a meeting while it runs or afterwards: "What did I miss?", "My action items", answers cite timestamps. Works for a day's work log too. |
 | **Screen activity** | Reads the text of the window you are working in through macOS Accessibility: app, window title, URL, content. No screenshots, no OCR. |
-| **Daily work log** | Every night, the day becomes a log grouped by project, with tickets, PRs, documents, meetings and open threads. |
+| **Daily work log** | Every night, the day becomes a log grouped by project, with tickets, PRs, documents, meetings and open threads. Days missed while merkwerk was closed are written on the next start. |
 | **MCP server** | Ask Claude, Cursor or any MCP client about your meetings and your work. |
+| **Notes window** | Meetings and Activity in separate tabs, search, tags, rename and delete, a Start/Stop recording button, and the raw transcript or window sessions one click away. |
 | **Raw files** | Everything is JSON, Markdown and WAV in a folder you own. Grep it, back it up, delete it. |
 
 ## Install
@@ -59,20 +60,22 @@ Requirements: macOS 14.6 or newer, Apple Silicon recommended, the
 OpenAI-compatible endpoint works).
 
 ```sh
-git clone https://github.com/ArzelaAscoIi/merkwerk.git
-cd merkwerk
-cargo install --path .
+cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.1
 merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD (1 MB)
 ollama pull gemma4      # the default notes model
 merkwerk install        # writes ~/Applications/merkwerk.app
 open -a merkwerk        # opens the notes window and starts watching
 ```
+To build the latest `main` instead, clone the repository and run `cargo install --path .`. See
+[releases](https://github.com/ArzelaAscoIi/merkwerk/releases) for what changed.
+
 With LM Studio, start its local server on port 1234 from the Developer tab or with `lms server start`, and load a model.
 
 Run it as `merkwerk.app`, not from a terminal: macOS asks for system audio on behalf of the app
 that started merkwerk, and terminals like Ghostty or Terminal can't get that permission, so the
-other side of a call would record as silence. Rerun `merkwerk install` after every update. The app
-logs to `~/merkwerk/merkwerk.log`. Environment variables from your shell don't reach the app.
+other side of a call would record as silence. After every update, run `merkwerk install` again and
+restart the app. The app logs to `~/merkwerk/merkwerk.log`. Environment variables from your shell
+don't reach the app; use `settings.json` (see [Configuration](#configuration)).
 
 On first use macOS asks merkwerk.app for these permissions:
 
@@ -95,14 +98,15 @@ Settings page.
 
 - **Manual (default).** When another app starts using the microphone, the pill shows
   `Call  Zoom  [Record] [Ignore]` and the Dock icon bounces once. Nothing is recorded
-  until you click **Record**. You can also start a recording anytime from the menu
-  (**Start recording**, ⌘R), for example for a conversation in person.
+  until you click **Record**. You can also start a recording anytime with **Start recording** in
+  the notes window or the menu (⌘R), for example for a conversation in person.
 - **Auto-record.** Enable **Auto-record calls** in the Dock or menu bar menu. Every detected call
-  is recorded; click **Stop** to opt out of that call. The choice is saved in
+  is recorded; hover the pill and click **Stop** to opt out of that call. The choice is saved in
   `~/merkwerk/settings.json`.
 
 A recording of a call ends 15 seconds after the app releases the microphone. Notes are written in
-the background, so a back-to-back call is still caught.
+the background (the meeting shows "Writing notes…" until they are done), so a back-to-back call is
+still caught. A recording in which nobody said anything is deleted.
 
 **Models**
 
@@ -118,9 +122,11 @@ Choices are saved in `~/merkwerk/settings.json`; the environment variables below
 
 **Reading**
 
-The notes window opens at launch and with a click on the Dock icon. Meetings and work logs are
-grouped by day; the raw transcript (or the raw window sessions of a work log) sits behind the
-toggle. Keys: `↑` `↓` move, `t` toggles the raw view, `/` searches.
+The notes window opens at launch and with a click on the Dock icon. The **Meetings** tab lists
+meetings by day, the **Activity** tab the daily work logs, with today's activity visible while it
+is recorded. The raw transcript (or the raw window sessions of a work log) sits behind the toggle.
+Click a title to rename a meeting, `+` to tag it, the trash icon to move it to the Trash. Keys:
+`↑` `↓` move, `t` toggles the raw view, `/` searches.
 
 **Asking**
 
@@ -185,8 +191,10 @@ claude mcp add merkwerk -- merkwerk mcp
   loopback for system audio.
 - **Echo** from your speakers reaching the mic is dropped from `me` when its words match `them`
   speech at the same time; the raw segments stay in `transcript.jsonl`.
-- **Calendar**: after a meeting, the overlapping calendar event (EventKit) supplies the title and
-  the invited names, so notes can name owners. merkwerk.app asks for calendar access once.
+- **Calendar**: after a meeting, the overlapping calendar event with other invitees (EventKit)
+  supplies the title and the invited names, so notes can name owners. With exactly one other
+  invitee, the `them` lines carry that person's first name. Any calendar macOS Calendar syncs
+  (iCloud, Google, Exchange) works. merkwerk.app asks for calendar access once.
 - **Transcription** runs Silero VAD on chunks of up to 30 seconds, cut at a pause, and sends only speech to
   [parakeet-rs](https://github.com/altunenes/parakeet-rs) (ONNX Runtime) or
   [whisper-rs](https://github.com/tazz4843/whisper-rs).
@@ -200,13 +208,13 @@ claude mcp add merkwerk -- merkwerk mcp
 
 ```
 ~/merkwerk/
-  settings.json                 recording mode, screen activity switch, model choices
+  settings.json                 recording mode, screen activity switch, model choices, ignore list
   vocab.txt                     optional: names and terms, one per line, for correct spelling in notes
   2026-10-16_100000/            one folder per meeting
-    meta.json                   title, app, start, end, tags
+    meta.json                   title, app, start, end, invitees, tags
     me.wav  them.wav            audio, 16 kHz mono
     transcript.jsonl            segments {source, start, end, text}, grows live
-    transcript.md               [hh:mm:ss] me|them: text
+    transcript.md               [hh:mm:ss] me|them|<name>: text, one line per turn
     summary.md                  notes
   activity/
     2026-10-16.jsonl            screen activity {ts, app, window, url, text | add}
@@ -227,7 +235,9 @@ claude mcp add merkwerk -- merkwerk mcp
 
 ## Configuration
 
-All settings are environment variables; the defaults are fully local.
+The defaults are fully local. Choices made in the menu are saved in `~/merkwerk/settings.json`;
+`llm_url`, `llm_model`, `engine` and `ignore` can also be set there by hand. Environment variables
+override both, but only reach the app if set with `launchctl setenv`.
 
 | Variable | Default |
 |---|---|
@@ -248,7 +258,8 @@ All settings are environment variables; the defaults are fully local.
 - macOS only.
 - Without headphones the microphone also picks up the speakers, so the other side can appear in
   your channel.
-- Speakers are separated by channel (`me` and `them`), not per person.
+- Speakers are separated by channel (`me` and `them`), not per person; only a 1:1 with a calendar
+  invite names the other side.
 - Back-to-back calls in the same app can end up in one recording if the next call grabs the
   microphone right away.
 - Apps that draw their content as pixels (some terminals, remote desktops, games) only show their
