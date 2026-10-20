@@ -239,7 +239,7 @@ All settings are environment variables; the defaults are fully local.
 | `MERKWERK_LLM_MODEL` | `gemma4` (also selectable in the menu) |
 | `MERKWERK_LLM_KEY` | unset (Bearer token for hosted APIs) |
 | `MERKWERK_ME` | first name of your macOS account (how notes refer to you) |
-| `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr` (apps whose mic use is not a call) |
+| `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr` (apps whose mic use is not a call; also `"ignore"` in `settings.json`) |
 | `MERKWERK_SCREEN` | on (`0` turns screen activity off; also switchable in the menu) |
 | `MERKWERK_SCREEN_IGNORE` | unset (extra apps or windows never captured) |
 
