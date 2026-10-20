@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 const PROMPT: &str = "You write meeting notes from a raw transcript.
 
 Transcript lines are `[hh:mm:ss] speaker: text`. `me` is {ME}, who recorded the meeting; `them` is everyone \
-else (one or several people; use names when the conversation or the invite list reveals them). The transcript is machine \
+else (one or several people; use names when the conversation or the invite list reveals them). In a \
+1:1 the other person's lines carry their first name instead of `them`. The transcript is machine \
 generated and can be German, English or mixed, with recognition errors: infer intent, never invent facts.
 
 Always write the notes in English, in Markdown, in this shape:

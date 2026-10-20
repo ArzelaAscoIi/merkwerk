@@ -100,9 +100,22 @@ impl Store {
         drop_echo(segs)
     }
 
-    /// `[00:01:23] me: text` lines.
+    /// `[00:01:23] me: text` lines; in a 1:1 `them` is the other person's first name.
     pub fn transcript(&self, id: &str) -> String {
-        render(&self.segments(id))
+        let text = render(&self.segments(id));
+        match self.them_name(id) {
+            Some(name) => text.replace("] them: ", &format!("] {name}: ")),
+            None => text,
+        }
+    }
+
+    /// The first name of the only other invitee, when the calendar event had exactly one: then all
+    /// system audio is that person.
+    pub fn them_name(&self, id: &str) -> Option<String> {
+        match self.load(id).ok()?.attendees.as_slice() {
+            [one] => first_name(one),
+            _ => None,
+        }
     }
 
     pub fn read(&self, id: &str, file: &str) -> Option<String> {
@@ -153,6 +166,14 @@ fn drop_echo(segs: Vec<Segment>) -> Vec<Segment> {
         .collect()
 }
 
+/// "Ole Example" -> "Ole"; an invitee without a display name is an address: "ole.x@co" -> "ole.x".
+fn first_name(invitee: &str) -> Option<String> {
+    invitee
+        .split(|c: char| c.is_whitespace() || c == '@')
+        .find(|w| !w.is_empty())
+        .map(str::to_string)
+}
+
 pub fn render(segments: &[Segment]) -> String {
     segments
         .iter()
@@ -173,6 +194,13 @@ pub fn render(segments: &[Segment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_name_of_invitee() {
+        assert_eq!(first_name("Ada Lovelace").as_deref(), Some("Ada"));
+        assert_eq!(first_name("ada.l@example.com").as_deref(), Some("ada.l"));
+        assert_eq!(first_name("  "), None);
+    }
 
     fn seg(source: Source, start: f64, text: &str) -> Segment {
         Segment {
