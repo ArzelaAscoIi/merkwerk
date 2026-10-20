@@ -57,6 +57,11 @@
   #rec.on { background: var(--rec); }
   #rec[hidden] { display: none; }
   .tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 12px 14px 0; }
+  #blocked { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px; color: var(--text);
+    background: color-mix(in srgb, var(--rec) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--rec) 35%, transparent); }
+  #blocked button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: #fff; background: var(--rec);
+    border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
+  #blocked[hidden] { display: none; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   input[type=search] {
     width: 100%; font: inherit; color: var(--text);
@@ -176,6 +181,7 @@
 <aside>
   <button id="rec" type="button" hidden>Start recording</button>
   <div class="seg tabs" id="tabs"><button type="button" data-tab="meetings">Meetings</button><button type="button" data-tab="activity">Activity</button></div>
+  <div id="blocked" hidden>Screen activity is paused: macOS hasn't allowed merkwerk Accessibility access.<button type="button">Open Settings</button></div>
   <div class="search">
     <label class="sr" for="q">Search meetings</label>
     <input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false">
@@ -484,6 +490,11 @@ rec.hidden = !window.webkit?.messageHandlers?.merkwerk;
 rec.onclick = () => {
   window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: rec.classList.contains("on") ? "stop" : "start" }));
 };
+// Called by the app every second: screen activity is on but lacks the Accessibility permission.
+const blocked = document.getElementById("blocked");
+blocked.querySelector("button").onclick = () =>
+  window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: "accessibility" }));
+window.merkwerkScreenBlocked = on => { blocked.hidden = !on; };
 // Called by the app every second with whether it is recording.
 window.merkwerkRecording = on => {
   rec.classList.toggle("on", on);
