@@ -226,9 +226,15 @@ fn install() -> Result<()> {
         env!("CARGO_PKG_VERSION")
     );
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
-    // Ad-hoc signature over the whole bundle, so macOS ties the permissions to merkwerk.app.
+    // Signed with a local certificate, macOS ties the permissions to "this identifier, this
+    // certificate" and keeps them across reinstalls; an ad-hoc signature changes with every build
+    // and macOS drops Accessibility, system audio and calendar access each time.
+    let identity = signing_identity().unwrap_or_else(|e| {
+        eprintln!("no local signing certificate ({e:#}); signing ad hoc, permissions reset on every install");
+        "-"
+    });
     let signed = std::process::Command::new("codesign")
-        .args(["--force", "--sign", "-", "--identifier", BUNDLE_ID])
+        .args(["--force", "--sign", identity, "--identifier", BUNDLE_ID])
         .arg(&app)
         .status()?;
     anyhow::ensure!(signed.success(), "codesign failed");
@@ -238,6 +244,63 @@ start it with: open -a merkwerk (quit any merkwerk running in a terminal first)"
         app.display()
     );
     Ok(())
+}
+
+const SIGNING_NAME: &str = "merkwerk local signing";
+
+/// A self-signed code signing certificate in the login keychain, made on first install. It never
+/// leaves this Mac and only has to stay the same; macOS doesn't need to trust it.
+// ponytail: codesign may ask once for the login keychain password; "Always Allow" ends that.
+fn signing_identity() -> Result<&'static str> {
+    use std::process::Command;
+    let exists = Command::new("security")
+        .args(["find-certificate", "-c", SIGNING_NAME])
+        .output()?
+        .status
+        .success();
+    if exists {
+        return Ok(SIGNING_NAME);
+    }
+    let dir = std::env::temp_dir().join(format!("merkwerk-signing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let run = |cmd: &mut Command| -> Result<()> {
+        let out = cmd.current_dir(&dir).output()?;
+        anyhow::ensure!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr).trim());
+        Ok(())
+    };
+    let made = (|| {
+        std::fs::write(
+            dir.join("cfg"),
+            format!(
+                "[req]\ndistinguished_name = dn\nx509_extensions = ext\nprompt = no\n[dn]\nCN = {SIGNING_NAME}\n\
+                 [ext]\nbasicConstraints = critical,CA:false\nkeyUsage = critical,digitalSignature\n\
+                 extendedKeyUsage = critical,codeSigning\n"
+            ),
+        )?;
+        // macOS's own LibreSSL writes a PKCS#12 that `security import` reads (OpenSSL 3 needs -legacy).
+        run(Command::new("/usr/bin/openssl").args([
+            "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650", "-keyout", "key.pem", "-out", "cert.pem",
+            "-config", "cfg",
+        ]))?;
+        run(Command::new("/usr/bin/openssl").args([
+            "pkcs12",
+            "-export",
+            "-inkey",
+            "key.pem",
+            "-in",
+            "cert.pem",
+            "-out",
+            "id.p12",
+            "-passout",
+            "pass:merkwerk",
+            "-name",
+            SIGNING_NAME,
+        ]))?;
+        run(Command::new("security").args(["import", "id.p12", "-P", "merkwerk", "-T", "/usr/bin/codesign"]))
+    })();
+    // The private key only lives on in the keychain.
+    let _ = std::fs::remove_dir_all(&dir);
+    made.map(|()| SIGNING_NAME)
 }
 
 /// Started as merkwerk.app, stderr goes nowhere; keep it in `$MERKWERK_DIR/merkwerk.log` instead.
