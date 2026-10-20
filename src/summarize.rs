@@ -30,7 +30,8 @@ Rules:
 person said they will do ('I will', 'I'll bring this to', 'let me') or was asked to do and accepted. \
 Ideas, proposals, wishlist items and 'we could' are not tasks. Drop the due date when none \
 was said; drop the parentheses when the owner is also unclear. Add one indented line of context only if \
-the task is unclear without it.
+the task is unclear without it. Omit the section if nobody committed to anything; never write \
+'none' or a placeholder.
 - Decisions: only what was settled, not ideas floated. Deferrals and rejections count ('X: moved to a \
 later iteration', 'no X for now'). Omit the section if nothing was settled.
 - Topics: at most 5, in the order discussed; merge small ones. At most 5 bullets each, one level of \
@@ -103,7 +104,8 @@ pub fn chat_messages(cfg: &Config, messages: Value) -> Result<String> {
     let text = resp["choices"][0]["message"]["content"]
         .as_str()
         .context("no content in LLM response")?;
-    anyhow::ensure!(!text.trim().is_empty(), "empty LLM response");
+    // A reply of only `---` or blank headings counts as empty too.
+    anyhow::ensure!(text.chars().any(char::is_alphanumeric), "empty LLM response");
     Ok(text.trim().to_string() + "\n")
 }
 

@@ -111,7 +111,12 @@ fn day_file(cfg: &Config, day: NaiveDate, ext: &str) -> PathBuf {
 /// Capture loop for `merkwerk watch`; never returns. Writes yesterday's work log after midnight.
 pub fn run(cfg: &Config, store: &Store) {
     let (c, s) = (cfg.clone(), store.clone());
-    thread::spawn(move || backfill(&c, &s));
+    // The notes server may not be up yet right after login; retry hourly until every day has a log.
+    thread::spawn(move || {
+        while !backfill(&c, &s) {
+            thread::sleep(Duration::from_secs(3600));
+        }
+    });
     // Off until switched on: no permission prompt, nothing read.
     while !crate::ui::SCREEN.load(std::sync::atomic::Ordering::Relaxed) {
         thread::sleep(TICK);
@@ -356,11 +361,11 @@ the input (about <time>)
 Group by project, not by app. Skip entertainment and idle noise. Omit empty sections. No preamble.";
 
 /// Writes the work log of every past day that has activity but no log, e.g. when merkwerk wasn't
-/// running at midnight.
-fn backfill(cfg: &Config, store: &Store) {
+/// running at midnight. True when none failed.
+fn backfill(cfg: &Config, store: &Store) -> bool {
     let today = Local::now().date_naive();
     let Ok(dir) = fs::read_dir(dir(&cfg.root)) else {
-        return;
+        return true;
     };
     let mut days: Vec<NaiveDate> = dir
         .flatten()
@@ -368,11 +373,14 @@ fn backfill(cfg: &Config, store: &Store) {
         .filter(|d| *d < today && !day_file(cfg, *d, "md").exists())
         .collect();
     days.sort();
+    let mut ok = true;
     for day in days {
         if let Err(e) = write_work_log(cfg, store, day) {
             eprintln!("work log {day}: {e:#}");
+            ok = false;
         }
     }
+    ok
 }
 
 /// Writes and returns `activity/<day>.md` from the day's screen activity and meeting notes.
