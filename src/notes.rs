@@ -110,11 +110,16 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
     let end = m.ended_at.as_deref().and_then(parse);
     let summary = store.read(&m.id, "summary.md").unwrap_or_default();
     let segments = store.segments(&m.id);
+    let them = store.them_name(&m.id);
     let lines: Vec<Value> = segments
         .iter()
         .map(|s| {
             let t = s.start as u64;
-            json!({"at": format!("{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60), "who": s.source.label(), "text": s.text})
+            let who = match (&them, s.source.label()) {
+                (Some(name), "them") => name.as_str(),
+                (_, label) => label,
+            };
+            json!({"at": format!("{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60), "who": who, "text": s.text})
         })
         .collect();
     let search = format!(

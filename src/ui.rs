@@ -196,6 +196,10 @@ define_class!(
             match req["action"].as_str() {
                 Some("start") => return START.store(true, Ordering::Relaxed),
                 Some("stop") => return STOP.store(true, Ordering::Relaxed),
+                Some("accessibility") => {
+                    let _ = Command::new("open").arg(ACCESSIBILITY_SETTINGS).spawn();
+                    return;
+                }
                 _ => {}
             }
             let Some((cfg, store)) = STORE.with_borrow(|s| s.clone()) else {
@@ -410,6 +414,14 @@ enum Row {
     Open(String, PathBuf),
 }
 
+const ACCESSIBILITY_SETTINGS: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+
+/// Screen activity is on but macOS hasn't granted Accessibility (e.g. after a reinstall changed the
+/// signature): nothing is recorded until it is.
+fn screen_blocked() -> bool {
+    SCREEN.load(Ordering::Relaxed) && !crate::screen::trusted(false)
+}
+
 fn entries(store: &Store) -> Vec<Row> {
     let recording = RECORDING.lock().unwrap().clone();
     let pending = PENDING.lock().unwrap().clone();
@@ -434,6 +446,12 @@ fn entries(store: &Store) -> Vec<Row> {
     }
     rows.push(Row::Auto(auto));
     rows.push(Row::Screen(SCREEN.load(Ordering::Relaxed)));
+    if screen_blocked() {
+        rows.push(Row::Open(
+            "⚠︎ Screen activity paused: allow Accessibility…".into(),
+            ACCESSIBILITY_SETTINGS.into(),
+        ));
+    }
     rows.push(Row::Separator);
     if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
         let engine = cfg.engine();
@@ -641,7 +659,11 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             }
             return;
         }
-        let js = format!("window.merkwerkRecording({})", RECORDING.lock().unwrap().is_some());
+        let js = format!(
+            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({})",
+            RECORDING.lock().unwrap().is_some(),
+            screen_blocked()
+        );
         unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
         for (id, answer) in ANSWERS.lock().unwrap().drain(..) {
             let js = format!("window.merkwerkAnswer({id}, {answer})");
