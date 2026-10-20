@@ -28,15 +28,15 @@ use std::{
     process::Command,
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Instant,
 };
 
 /// Set by the watch loop: the app being recorded and when it started.
 pub static RECORDING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-/// Meetings still being transcribed / summarized.
-pub static FINISHING: AtomicUsize = AtomicUsize::new(0);
+/// Ids of meetings still being transcribed / summarized.
+pub static FINISHING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Menu clicks, consumed by the watch loop.
 pub static START: AtomicBool = AtomicBool::new(false);
 pub static STOP: AtomicBool = AtomicBool::new(false);
@@ -196,6 +196,10 @@ define_class!(
             match req["action"].as_str() {
                 Some("start") => return START.store(true, Ordering::Relaxed),
                 Some("stop") => return STOP.store(true, Ordering::Relaxed),
+                Some("accessibility") => {
+                    let _ = Command::new("open").arg(ACCESSIBILITY_SETTINGS).spawn();
+                    return;
+                }
                 _ => {}
             }
             let Some((cfg, store)) = STORE.with_borrow(|s| s.clone()) else {
@@ -393,7 +397,7 @@ fn set_icon(mtm: MainThreadMarker, app: &NSApplication) {
 fn badge() -> String {
     if RECORDING.lock().unwrap().is_some() {
         "REC".into()
-    } else if FINISHING.load(Ordering::Relaxed) > 0 {
+    } else if !FINISHING.lock().unwrap().is_empty() {
         "…".into()
     } else {
         String::new()
@@ -405,7 +409,7 @@ fn title() -> String {
         let s = since.elapsed().as_secs();
         return format!("● {:02}:{:02}", s / 60, s % 60);
     }
-    if FINISHING.load(Ordering::Relaxed) > 0 {
+    if !FINISHING.lock().unwrap().is_empty() {
         "◌ mw".into()
     } else {
         "mw".into()
@@ -432,6 +436,14 @@ enum Row {
     Open(String, PathBuf),
 }
 
+const ACCESSIBILITY_SETTINGS: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+
+/// Screen activity is on but macOS hasn't granted Accessibility (e.g. after a reinstall changed the
+/// signature): nothing is recorded until it is.
+fn screen_blocked() -> bool {
+    SCREEN.load(Ordering::Relaxed) && !crate::screen::trusted(false)
+}
+
 fn entries(store: &Store) -> Vec<Row> {
     let recording = RECORDING.lock().unwrap().clone();
     let pending = PENDING.lock().unwrap().clone();
@@ -442,7 +454,7 @@ fn entries(store: &Store) -> Vec<Row> {
         (None, None) if auto => Row::Label("Watching for calls (auto-record)".into()),
         (None, None) => Row::Label("Watching for calls (manual)".into()),
     }];
-    let finishing = FINISHING.load(Ordering::Relaxed);
+    let finishing = FINISHING.lock().unwrap().len();
     if finishing > 0 {
         rows.push(Row::Label(format!("Writing notes for {finishing} meeting(s)")));
     }
@@ -456,6 +468,12 @@ fn entries(store: &Store) -> Vec<Row> {
     }
     rows.push(Row::Auto(auto));
     rows.push(Row::Screen(SCREEN.load(Ordering::Relaxed)));
+    if screen_blocked() {
+        rows.push(Row::Open(
+            "⚠︎ Screen activity paused: allow Accessibility…".into(),
+            ACCESSIBILITY_SETTINGS.into(),
+        ));
+    }
     rows.push(Row::Separator);
     if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
         let engine = cfg.engine();
@@ -663,7 +681,11 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             }
             return;
         }
-        let js = format!("window.merkwerkRecording({})", RECORDING.lock().unwrap().is_some());
+        let js = format!(
+            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({})",
+            RECORDING.lock().unwrap().is_some(),
+            screen_blocked()
+        );
         unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
         for (id, answer) in ANSWERS.lock().unwrap().drain(..) {
             let js = format!("window.merkwerkAnswer({id}, {answer})");

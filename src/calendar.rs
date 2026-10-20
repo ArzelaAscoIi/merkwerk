@@ -43,24 +43,33 @@ pub fn event_at(start: f64, end: f64) -> Option<Event> {
     let overlap = |e: &EKEvent| unsafe {
         e.endDate().timeIntervalSince1970().min(end) - e.startDate().timeIntervalSince1970().max(start)
     };
-    let best = events
+    let attendees = |e: &EKEvent| -> Vec<String> {
+        unsafe { e.attendees() }
+            .map(|all| {
+                all.iter()
+                    .filter(|p| unsafe {
+                        !p.isCurrentUser()
+                            && matches!(
+                                p.participantType(),
+                                EKParticipantType::Person | EKParticipantType::Unknown
+                            )
+                    })
+                    .filter_map(|p| unsafe { p.name() }.map(|n| n.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Only events with someone else invited: a focus block or reminder overlapping a call is not
+    // the call.
+    let (best, attendees) = events
         .iter()
         .filter(|e| !unsafe { e.isAllDay() })
-        .max_by(|a, b| overlap(a).total_cmp(&overlap(b)))?;
-    let attendees = unsafe { best.attendees() }
-        .map(|all| {
-            all.iter()
-                .filter(|p| unsafe {
-                    !p.isCurrentUser()
-                        && matches!(
-                            p.participantType(),
-                            EKParticipantType::Person | EKParticipantType::Unknown
-                        )
-                })
-                .filter_map(|p| unsafe { p.name() }.map(|n| n.to_string()))
-                .collect()
+        .map(|e| {
+            let a = attendees(&e);
+            (e, a)
         })
-        .unwrap_or_default();
+        .filter(|(_, a)| !a.is_empty())
+        .max_by(|a, b| overlap(&a.0).total_cmp(&overlap(&b.0)))?;
     Some(Event {
         title: unsafe { best.title() }.to_string(),
         attendees,

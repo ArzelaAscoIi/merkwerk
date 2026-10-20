@@ -159,9 +159,22 @@ impl Store {
         drop_echo(segs)
     }
 
-    /// `[00:01:23] me: text` lines.
+    /// `[00:01:23] me: text` lines; in a 1:1 `them` is the other person's first name.
     pub fn transcript(&self, id: &str) -> String {
-        render(&self.segments(id))
+        let text = render(&self.segments(id));
+        match self.them_name(id) {
+            Some(name) => text.replace("] them: ", &format!("] {name}: ")),
+            None => text,
+        }
+    }
+
+    /// The first name of the only other invitee, when the calendar event had exactly one: then all
+    /// system audio is that person.
+    pub fn them_name(&self, id: &str) -> Option<String> {
+        match self.load(id).ok()?.attendees.as_slice() {
+            [one] => first_name(one),
+            _ => None,
+        }
     }
 
     pub fn read(&self, id: &str, file: &str) -> Option<String> {
@@ -219,26 +232,67 @@ fn drop_echo(segs: Vec<Segment>) -> Vec<Segment> {
         .collect()
 }
 
+/// "Ada Lovelace" -> "Ada"; an invitee without a display name is an address: "ada.lovelace@co" -> "Ada".
+fn first_name(invitee: &str) -> Option<String> {
+    let word = match invitee.split_once('@') {
+        Some((local, _)) => local.split(['.', '_', '-', '+']).next()?,
+        None => invitee.split_whitespace().next()?,
+    };
+    let mut chars = word.chars();
+    let first = chars.next()?;
+    Some(first.to_uppercase().chain(chars).collect())
+}
+
+/// One line per turn: a speaker's consecutive segments joined, stamped with the first one's time.
+/// Whole thoughts read better (for people and the notes model) and cost fewer tokens than fragments.
 pub fn render(segments: &[Segment]) -> String {
-    segments
-        .iter()
-        .map(|s| {
+    let mut out = String::new();
+    let mut last = None;
+    for s in segments {
+        if last == Some(s.source) {
+            out.pop(); // the newline
+            out.push(' ');
+        } else {
             let t = s.start as u64;
-            format!(
-                "[{:02}:{:02}:{:02}] {}: {}\n",
+            out += &format!(
+                "[{:02}:{:02}:{:02}] {}: ",
                 t / 3600,
                 t / 60 % 60,
                 t % 60,
-                s.source.label(),
-                s.text
-            )
-        })
-        .collect()
+                s.source.label()
+            );
+        }
+        out += &s.text;
+        out.push('\n');
+        last = Some(s.source);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_name_of_invitee() {
+        assert_eq!(first_name("Ada Lovelace").as_deref(), Some("Ada"));
+        assert_eq!(first_name("ada.lovelace@example.com").as_deref(), Some("Ada"));
+        assert_eq!(first_name("  "), None);
+    }
+
+    #[test]
+    fn render_joins_turns() {
+        let segs = [
+            seg(Source::Me, 0.0, "Hi."),
+            seg(Source::Me, 2.0, "How are you?"),
+            seg(Source::Them, 4.0, "Good."),
+            seg(Source::Me, 65.0, "Nice."),
+        ];
+        assert_eq!(
+            render(&segs),
+            "[00:00:00] me: Hi. How are you?\n[00:00:04] them: Good.\n[00:01:05] me: Nice.\n"
+        );
+    }
 
     fn seg(source: Source, start: f64, text: &str) -> Segment {
         Segment {

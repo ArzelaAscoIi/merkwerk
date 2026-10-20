@@ -81,13 +81,20 @@ On first use macOS asks merkwerk.app for these permissions:
 | Microphone | your side of the call |
 | System Audio Recording | the other side of the call (System Settings > Privacy & Security > Screen & System Audio Recording) |
 | Accessibility | reading window text for the work log |
+| Calendars | naming meetings and their participants |
+
+`merkwerk install` signs the app with a self-signed certificate it creates in your login keychain
+the first time ("merkwerk local signing"; macOS may ask once for your keychain password). Because
+the signature stays the same, these permissions survive reinstalls. If the menu or the notes
+window says screen activity is paused, Accessibility is missing: the warning opens the right
+Settings page.
 
 ## Using it
 
 **Recording modes**
 
 - **Manual (default).** When another app starts using the microphone, the pill shows
-  `Call detected  Zoom  [Record] [Ignore]` and the Dock icon bounces once. Nothing is recorded
+  `Call  Zoom  [Record] [Ignore]` and the Dock icon bounces once. Nothing is recorded
   until you click **Record**. You can also start a recording anytime from the menu
   (**Start recording**, ⌘R), for example for a conversation in person.
 - **Auto-record.** Enable **Auto-record calls** in the Dock or menu bar menu. Every detected call

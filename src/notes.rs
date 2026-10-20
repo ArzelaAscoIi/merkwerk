@@ -52,6 +52,7 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
         .map(|d| d.as_secs() / 60);
     minute.hash(&mut h);
     live.hash(&mut h);
+    crate::ui::FINISHING.lock().unwrap().hash(&mut h);
     // "Today" and "Yesterday" labels change at midnight.
     Local::now().date_naive().hash(&mut h);
     h.finish()
@@ -84,7 +85,7 @@ pub fn data(cfg: &Config, store: &Store) -> String {
                 let md = std::fs::metadata(store.dir(&m.id).join(file)).ok();
                 md.as_ref().map(|md| (md.len(), md.modified().ok())).hash(&mut h);
             }
-            (store.live(m), today).hash(&mut h);
+            (store.live(m), writing(&m.id), today).hash(&mut h);
             let key = h.finish();
             match cache.get(&m.id) {
                 Some((k, v)) if *k == key => v.clone(),
@@ -109,11 +110,16 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
     let end = m.ended_at.as_deref().and_then(parse);
     let summary = store.read(&m.id, "summary.md").unwrap_or_default();
     let segments = store.segments(&m.id);
+    let them = store.them_name(&m.id);
     let lines: Vec<Value> = segments
         .iter()
         .map(|s| {
             let t = s.start as u64;
-            json!({"at": format!("{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60), "who": s.source.label(), "text": s.text})
+            let who = match (&them, s.source.label()) {
+                (Some(name), "them") => name.as_str(),
+                (_, label) => label,
+            };
+            json!({"at": format!("{:02}:{:02}:{:02}", t / 3600, t / 60 % 60, t % 60), "who": who, "text": s.text})
         })
         .collect();
     let search = format!(
@@ -141,6 +147,7 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
         "app": m.app.as_deref().map(app_name),
         "tags": m.tags,
         "live": store.live(m),
+        "writing": writing(&m.id),
         "notes": (!summary.trim().is_empty()).then(|| render(&summary)),
         "lines": lines,
         "search": search,
@@ -216,6 +223,11 @@ fn day_label_naive(d: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
 
 fn day_label(start: DateTime<FixedOffset>, today: chrono::NaiveDate) -> String {
     day_label_naive(start.with_timezone(&Local).date_naive(), today)
+}
+
+/// Whether this app is still transcribing / summarizing the meeting.
+fn writing(id: &str) -> bool {
+    crate::ui::FINISHING.lock().unwrap().iter().any(|f| f == id)
 }
 
 /// "Vivaldi Helper" -> "Vivaldi", "zoom.us" stays.
