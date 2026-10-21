@@ -146,11 +146,13 @@ define_class!(
 
         #[unsafe(method(auto:))]
         fn auto(&self, _sender: &NSObject) {
-            let on = !AUTO.load(Ordering::Relaxed);
-            AUTO.store(on, Ordering::Relaxed);
-            if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
-                let _ = crate::config::set_setting(&cfg.root, "auto_record", on.into());
-            }
+            set_auto(!AUTO.load(Ordering::Relaxed));
+        }
+
+        /// The pill's Always: turns auto-record on, which also records the call it is shown for.
+        #[unsafe(method(always:))]
+        fn always(&self, _sender: &NSObject) {
+            set_auto(true);
         }
 
         /// The pill's Stop: only ever stops, so a late second click can't start a new recording.
@@ -286,6 +288,14 @@ enum Pick {
 }
 
 /// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
+/// Auto-record on or off, saved to settings.json.
+fn set_auto(on: bool) {
+    AUTO.store(on, Ordering::Relaxed);
+    if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
+        let _ = crate::config::set_setting(&cfg.root, "auto_record", on.into());
+    }
+}
+
 fn watch_models(cfg: &Config) {
     let cfg = cfg.clone();
     std::thread::spawn(move || {
@@ -755,6 +765,7 @@ struct Pill {
     label: Retained<NSTextField>,
     primary: Retained<NSButton>,
     secondary: Retained<NSButton>,
+    always: Retained<NSButton>,
     compact: Cell<bool>,
     /// Hover expands only once the mouse has left the pill since recording began, so the click on
     /// Record can't turn into a click on Stop.
@@ -764,7 +775,7 @@ struct Pill {
     born: Instant,
 }
 
-const PILL_W: f64 = 320.0;
+const PILL_W: f64 = 380.0;
 const PILL_H: f64 = 28.0;
 const PILL_COMPACT_W: f64 = 76.0;
 
@@ -836,6 +847,9 @@ impl Pill {
         // Record is the big one: it is what a detected call is shown for.
         let primary = button(sel!(record:), PILL_W - 100.0, 96.0, NSControlSize::Regular);
         let secondary = button(sel!(ignore:), PILL_W - 160.0, 56.0, NSControlSize::Small);
+        let always = button(sel!(always:), PILL_W - 220.0, 56.0, NSControlSize::Small);
+        always.setTitle(ns_string!("Always"));
+        always.setToolTip(Some(ns_string!("Record this call and every call from now on")));
         panel.setContentView(Some(&root));
         Pill {
             panel,
@@ -843,6 +857,7 @@ impl Pill {
             label,
             primary,
             secondary,
+            always,
             compact: Cell::new(false),
             armed: Cell::new(false),
             text: RefCell::default(),
@@ -884,7 +899,7 @@ impl Pill {
         let width = if compact {
             PILL_COMPACT_W - 32.0
         } else if self.secondary.isHidden() {
-            190.0
+            250.0
         } else {
             130.0
         };
@@ -944,6 +959,7 @@ impl Pill {
         let action = if recording { sel!(stop:) } else { sel!(record:) };
         unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
+        self.always.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));
         *self.text.borrow_mut() = (short, full);
         self.set_label();
