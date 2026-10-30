@@ -102,6 +102,12 @@
   }
   .meta { display: block; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
   .rec { color: var(--rec); font-weight: 500; }
+  .meta button.app {
+    font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: default;
+    text-decoration: underline dotted; text-underline-offset: 3px;
+  }
+  .meta button.app:hover { color: var(--text); }
+  .meta button.app.armed { color: var(--rec); text-decoration-style: solid; }
   .rec::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--rec); margin-right: 6px; vertical-align: 1px; }
   .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
   .tag {
@@ -232,6 +238,11 @@ let titleDraft = null;
 let rendering = false;
 // Id of the meeting whose Delete button was clicked once and now asks to confirm.
 let deleteArmed = null;
+// Same for the app label's "Never record <app>?" / "Record <app> again?".
+let neverArmed = null;
+// Process name fragments merkwerk doesn't record, pushed by the app every second.
+let ignored = [];
+const isIgnored = app => ignored.some(f => app.toLowerCase().includes(f));
 // Sidebar tab: meetings, or the screen activity work logs.
 let tab = "meetings";
 const tabs = document.getElementById("tabs");
@@ -322,7 +333,8 @@ function renderView(animate = true) {
   const head = el("header");
   const left = el("div");
   left.append(m.kind === "log" ? el("h1", "title", m.title) : titleEditor(m));
-  const meta = parts("meta parts", [m.date, m.span, m.app]);
+  const meta = parts("meta parts", [m.date, m.span]);
+  if (m.app) meta.append(appLabel(m));
   if (m.live) meta.prepend(el("span", "rec", "Recording"));
   left.append(meta);
   if (m.kind !== "log") left.append(tagRow(m));
@@ -541,6 +553,13 @@ function emptyNotes(m) {
   else if (m.today) e.textContent = "Today's work log is written after midnight. Activity shows what was recorded so far.";
   else if (m.kind === "log") e.textContent = "No work log yet.";
   else if (!m.lines.length) e.textContent = "Nothing was said in this recording.";
+  else if (window.webkit?.messageHandlers?.merkwerk) {
+    e.append("No notes yet. ");
+    const b = el("button", "copy", "Write notes");
+    b.title = "Write the notes for this meeting with the notes model";
+    b.onclick = () => window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: "summarize", target: m.id }));
+    e.append(b);
+  }
   else e.innerHTML = `No notes yet. Run <code>merkwerk summarize ${m.id}</code> to write them.`;
   return e;
 }
@@ -584,13 +603,35 @@ function deleteButton(m) {
   return b;
 }
 
+// The app that triggered the recording; two clicks stop (or resume) recording its calls.
+function appLabel(m) {
+  const s = el("span");
+  if (!window.webkit?.messageHandlers?.merkwerk || m.kind === "log") { s.textContent = m.app; return s; }
+  const never = isIgnored(m.app);
+  const armed = neverArmed === m.id;
+  const label = armed ? (never ? `Record ${m.app} again?` : `Never record ${m.app}?`) : (never ? `${m.app} (never recorded)` : m.app);
+  const b = el("button", armed ? "app armed" : "app", label);
+  b.title = never ? "Record calls in this app again" : "Stop recording calls in this app";
+  b.onclick = () => {
+    if (!armed) { neverArmed = m.id; renderView(false); return; }
+    neverArmed = null;
+    // Optimistic; the next tick sends the saved list.
+    ignored = never ? ignored.filter(f => !m.app.toLowerCase().includes(f)) : [...ignored, m.app.toLowerCase()];
+    window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: never ? "record" : "never", target: m.id }));
+    renderView(false);
+  };
+  s.append(b);
+  return s;
+}
+
 // Any press outside the armed button cancels it. Not blur: WebKit blurs a button on its own click.
 // Swaps only that button, so the press still reaches whatever it landed on.
 document.addEventListener("pointerdown", e => {
   const armed = document.querySelector(".armed");
-  if (!deleteArmed || !armed || armed.contains(e.target)) return;
-  deleteArmed = null;
-  armed.replaceWith(deleteButton(meetings.find(x => x.id === current)));
+  if (!armed || armed.contains(e.target)) return;
+  const m = meetings.find(x => x.id === current);
+  if (deleteArmed) { deleteArmed = null; armed.replaceWith(deleteButton(m)); }
+  if (neverArmed) { neverArmed = null; armed.parentElement.replaceWith(appLabel(m)); }
 }, true);
 
 function copyButton(m) {
@@ -649,6 +690,12 @@ const blocked = document.getElementById("blocked");
 blocked.querySelector("button").onclick = () =>
   window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: "accessibility" }));
 window.merkwerkScreenBlocked = on => { blocked.hidden = !on; };
+window.merkwerkIgnored = list => {
+  if (JSON.stringify(list) === JSON.stringify(ignored)) return;
+  ignored = list;
+  // Not while a confirmation is showing: re-rendering would drop it.
+  if (!document.querySelector(".armed")) renderView(false);
+};
 // Called by the app every second with whether it is recording.
 window.merkwerkRecording = on => {
   rec.classList.toggle("on", on);

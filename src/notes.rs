@@ -231,7 +231,7 @@ fn writing(id: &str) -> bool {
 }
 
 /// "Vivaldi Helper" -> "Vivaldi", "zoom.us" stays.
-fn app_name(app: &str) -> String {
+pub fn app_name(app: &str) -> String {
     app.split(" Helper").next().unwrap_or(app).to_string()
 }
 

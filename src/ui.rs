@@ -126,6 +126,7 @@ define_class!(
                     let _ = crate::config::set_setting(&cfg.root, "llm_url", url.into());
                     SERVER_MODELS.lock().unwrap().clear();
                 }
+                Some(Pick::Never(app)) => set_recorded(&cfg, app, false),
                 None => {}
             }
         }
@@ -174,8 +175,8 @@ define_class!(
 );
 
 define_class!(
-    /// Receives chat questions, tag/title edits, deletes and Start/Stop recording from the notes
-    /// page (`window.webkit.messageHandlers.merkwerk`).
+    /// Receives chat questions, tag/title edits, deletes, notes retries, "Never record <app>" and
+    /// Start/Stop recording from the notes page (`window.webkit.messageHandlers.merkwerk`).
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "MerkwerkChatBridge"]
@@ -205,6 +206,41 @@ define_class!(
             let Some((cfg, store)) = STORE.with_borrow(|s| s.clone()) else {
                 return;
             };
+            if req["action"] == "summarize" {
+                let id = req["target"].as_str().unwrap_or_default().to_string();
+                // Validated: finalize deletes a meeting whose transcript is empty.
+                match store.load_editable(&id) {
+                    Ok(meta) if !store.live(&meta) => {}
+                    Ok(_) => return eprintln!("{id}: notes: still recording"),
+                    Err(e) => return eprintln!("notes: {e:#}"),
+                }
+                {
+                    let mut finishing = FINISHING.lock().unwrap();
+                    if finishing.contains(&id) {
+                        return;
+                    }
+                    finishing.push(id.clone());
+                }
+                std::thread::spawn(move || {
+                    if let Err(e) = crate::session::finalize(&cfg, &store, &id) {
+                        eprintln!("{id}: notes: {e:#}");
+                    }
+                    FINISHING.lock().unwrap().retain(|f| *f != id);
+                });
+                return;
+            }
+            // "Never record <app>" or "Record <app> again" from a meeting's app label; the app
+            // name comes from meta.json.
+            if req["action"] == "never" || req["action"] == "record" {
+                match store.load_editable(req["target"].as_str().unwrap_or_default()) {
+                    Ok(meta) => meta
+                        .app
+                        .into_iter()
+                        .for_each(|app| set_recorded(&cfg, app, req["action"] == "record")),
+                    Err(e) => eprintln!("never record: {e:#}"),
+                }
+                return;
+            }
             // Tag edit: a small file write, done right here; the next refresh shows it everywhere.
             if let Some(tags) = req["tags"].as_array() {
                 let tags: Vec<String> = tags.iter().filter_map(|t| Some(t.as_str()?.to_string())).collect();
@@ -283,6 +319,40 @@ enum Pick {
     Engine(String),
     Llm(String),
     Server(String),
+    Never(String),
+}
+
+/// "Never record <app>" (`record: false`) or its undo: moves the app's shown name ("Vivaldi
+/// Helper" -> "Vivaldi", covering all its helpers) between settings.json `ignore` and `allow`;
+/// `allow` also overrides the built-in defaults. Never also stops a running recording of the app.
+fn set_recorded(cfg: &Config, app: String, record: bool) {
+    let app = notes::app_name(&app);
+    if !record
+        && RECORDING
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|r| notes::app_name(&r.0).eq_ignore_ascii_case(&app))
+    {
+        STOP.store(true, Ordering::Relaxed);
+    }
+    let (add, remove) = if record {
+        ("allow", "ignore")
+    } else {
+        ("ignore", "allow")
+    };
+    for key in [remove, add] {
+        let mut apps: Vec<String> = crate::config::setting(&cfg.root, key)
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        apps.retain(|a| !a.eq_ignore_ascii_case(&app));
+        if key == add {
+            apps.push(app.clone());
+        }
+        if let Err(e) = crate::config::set_setting(&cfg.root, key, apps.into()) {
+            eprintln!("{key}: {e}");
+        }
+    }
 }
 
 /// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
@@ -429,6 +499,8 @@ enum Row {
     Toggle(String),
     /// Submenu of exclusive choices: label, selected, what picking it does.
     Choice(&'static str, Vec<(String, bool, Pick)>),
+    /// "Never record <app>": adds the app to settings.json `ignore`.
+    Never(String),
     Ignore,
     Auto(bool),
     Screen(bool),
@@ -465,6 +537,13 @@ fn entries(store: &Store) -> Vec<Row> {
     }));
     if pending.is_some() && recording.is_none() {
         rows.push(Row::Ignore);
+    }
+    // A hand-started recording is labelled "manual" (watch_loop): there is no app to exclude.
+    let app = pending
+        .clone()
+        .or_else(|| recording.as_ref().map(|r| r.0.clone()).filter(|a| a != "manual"));
+    if let Some(app) = app {
+        rows.push(Row::Never(app));
     }
     rows.push(Row::Auto(auto));
     rows.push(Row::Screen(SCREEN.load(Ordering::Relaxed)));
@@ -577,6 +656,16 @@ fn menu(mtm: MainThreadMarker, handler: &Handler, rows: &[Row]) -> Retained<NSMe
             Row::Ignore => unsafe {
                 add("Ignore this call", Some(sel!(ignore:)), ns_string!("")).setTarget(Some(handler))
             },
+            Row::Never(app) => {
+                let item = add(
+                    &format!("Never record {}", notes::app_name(app)),
+                    Some(sel!(pick:)),
+                    ns_string!(""),
+                );
+                unsafe { item.setTarget(Some(handler)) };
+                item.setTag(picks.len() as isize);
+                picks.push(Pick::Never(app.clone()));
+            }
             Row::Auto(on) => {
                 let item = add("Auto-record calls", Some(sel!(auto:)), ns_string!(""));
                 unsafe { item.setTarget(Some(handler)) };
@@ -681,10 +770,18 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             }
             return;
         }
+        // The context menu's Reload blanks a page loaded from an HTML string: load it again.
+        if unsafe { !web.isLoading() && web.title().is_none_or(|t| t.length() == 0) } {
+            let page = notes::page(&notes::data(cfg, store));
+            unsafe { web.loadHTMLString_baseURL(&NSString::from_str(&page), None) };
+            *shown = notes::fingerprint(cfg, store);
+            return;
+        }
         let js = format!(
-            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({})",
+            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({}); window.merkwerkIgnored({})",
             RECORDING.lock().unwrap().is_some(),
-            screen_blocked()
+            screen_blocked(),
+            serde_json::json!(cfg.ignore())
         );
         unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
         for (id, answer) in ANSWERS.lock().unwrap().drain(..) {

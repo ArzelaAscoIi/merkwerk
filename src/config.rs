@@ -22,8 +22,6 @@ pub struct Config {
     pub llm_key: Option<String>,
     /// How the notes name the person recording (`me` in transcripts).
     pub me: String,
-    /// Process name fragments whose mic usage is not a call: other recorders, dictation tools.
-    pub ignore: Vec<String>,
     /// App, bundle id or window-title fragments never captured; defaults plus `MERKWERK_SCREEN_IGNORE`.
     pub screen_ignore: Vec<String>,
 }
@@ -34,6 +32,8 @@ pub const PARAKEET_FILES: [&str; 3] = ["encoder-model.int8.onnx", "decoder_joint
 pub const VAD_URL: &str = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
 pub const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin";
 pub const MODEL_V2_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2-q5_0.bin";
+/// Process name fragments never recorded unless `MERKWERK_IGNORE` replaces them: other recorders, dictation tools.
+pub const DEFAULT_IGNORE: &str = "merkwerk,screenpipe,openwhispr,handy";
 /// Notes servers offered in the menu: (label, chat completions URL). The first is the default.
 pub const LLM_SERVERS: [(&str, &str); 2] = [
     ("Ollama", "http://localhost:11434/v1/chat/completions"),
@@ -67,7 +67,6 @@ impl Config {
             lang: var("MERKWERK_LANG").unwrap_or_else(|| "en,de".into()),
             llm_key: var("MERKWERK_LLM_KEY"),
             me: var("MERKWERK_ME").unwrap_or_else(first_name),
-            ignore: list(&var("MERKWERK_IGNORE").unwrap_or_else(|| "merkwerk,screenpipe,openwhispr".into())),
             screen_ignore: list(&format!(
                 "{},{}",
                 crate::screen::DEFAULT_IGNORE,
@@ -129,6 +128,27 @@ impl Config {
         let (base, _) = url.split_once("/v1/")?;
         Some(format!("{base}/v1/models"))
     }
+
+    /// Process name fragments whose mic use is not a call (other recorders, dictation tools):
+    /// `MERKWERK_IGNORE` (else the defaults) plus settings.json `ignore`, minus settings.json
+    /// `allow` (both set by "Never record" and "Record again" in the app).
+    pub fn ignore(&self) -> Vec<String> {
+        let base = std::env::var("MERKWERK_IGNORE").ok().filter(|v| !v.is_empty());
+        let mut all = list(base.as_deref().unwrap_or(DEFAULT_IGNORE));
+        all.extend(apps(&self.root, "ignore"));
+        let allow = apps(&self.root, "allow");
+        // An allowed name lifts every fragment it matches ("Zoom.us" lifts "zoom").
+        all.retain(|f| !allow.iter().any(|a| a.contains(f.as_str())));
+        all
+    }
+}
+
+/// A settings.json list of app names, lowercased.
+fn apps(root: &std::path::Path, key: &str) -> Vec<String> {
+    match setting(root, key) {
+        Some(serde_json::Value::Array(v)) => v.iter().filter_map(|v| v.as_str()).flat_map(list).collect(),
+        _ => vec![],
+    }
 }
 
 fn chosen(root: &std::path::Path, env: &str, key: &str, default: &str) -> String {
@@ -175,6 +195,23 @@ mod tests {
         );
         assert_eq!(chosen(&root, "MERKWERK_TEST_UNSET", "engine", "parakeet"), "parakeet");
         assert!(auto_record(&root), "earlier keys survive later writes");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ignore_follows_settings() {
+        let root = std::env::temp_dir().join(format!("merkwerk-test-ignore-{}", std::process::id()));
+        set_setting(&root, "ignore", serde_json::json!(["Handy2"])).unwrap();
+        let cfg = Config {
+            root: root.clone(),
+            ..Config::from_env()
+        };
+        assert!(cfg.ignore().contains(&"handy2".to_string()));
+        set_setting(&root, "allow", serde_json::json!(["Handy"])).unwrap();
+        assert!(
+            !cfg.ignore().contains(&"handy".to_string()),
+            "allow overrides the defaults"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

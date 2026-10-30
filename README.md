@@ -200,7 +200,7 @@ claude mcp add merkwerk -- merkwerk mcp
 
 ```
 ~/merkwerk/
-  settings.json                 recording mode, screen activity switch, model choices
+  settings.json                 recording mode, screen activity switch, model choices, ignored apps
   vocab.txt                     optional: names and terms, one per line, for correct spelling in notes
   2026-10-16_100000/            one folder per meeting
     meta.json                   title, app, start, end, tags
@@ -239,9 +239,16 @@ All settings are environment variables; the defaults are fully local.
 | `MERKWERK_LLM_MODEL` | `gemma4` (also selectable in the menu) |
 | `MERKWERK_LLM_KEY` | unset (Bearer token for hosted APIs) |
 | `MERKWERK_ME` | first name of your macOS account (how notes refer to you) |
-| `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr` (apps whose mic use is not a call) |
+| `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr,handy` (apps whose mic use is not a call; **Never record** in the menu, or a click on a meeting's app name in the notes window, adds to `ignore` in `settings.json`; clicking a never-recorded app name again moves it to `allow`, which also overrides these defaults) |
 | `MERKWERK_SCREEN` | on (`0` turns screen activity off; also switchable in the menu) |
 | `MERKWERK_SCREEN_IGNORE` | unset (extra apps or windows never captured) |
+
+Extra fields for a model's requests go in `settings.json`, keyed by the exact model name. They are
+sent with every notes, Ask and work log request and override the defaults (e.g. `temperature`):
+
+```json
+"llm_options": { "google/gemma-4-26b-a4b-qat": { "reasoning_effort": "none" } }
+```
 
 ## Limitations
 

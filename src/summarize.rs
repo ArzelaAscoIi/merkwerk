@@ -132,10 +132,22 @@ pub fn chat(cfg: &Config, system: &str, user: &str) -> Result<String> {
     )
 }
 
+/// The chat completions body for `model`.
+fn request(cfg: &Config, model: &str, messages: Value) -> Value {
+    // Notes are extraction, not writing: no sampling, so the same meeting gives the same notes.
+    let mut body = json!({ "model": model, "messages": messages, "temperature": 0 });
+    // Per-model fields from settings.json "llm_options", e.g. {"reasoning_effort": "none"}; they win over the defaults.
+    if let Some(Value::Object(opts)) =
+        crate::config::setting(&cfg.root, "llm_options").and_then(|o| o.get(model).cloned())
+    {
+        body.as_object_mut().unwrap().extend(opts);
+    }
+    body
+}
+
 /// A full message list (system, user, assistant, ...) against the configured endpoint.
 pub fn chat_messages(cfg: &Config, messages: Value) -> Result<String> {
-    // Notes are extraction, not writing: no sampling, so the same meeting gives the same notes.
-    let body = json!({ "model": cfg.llm_model(), "messages": messages, "temperature": 0 });
+    let body = request(cfg, &cfg.llm_model(), messages);
     let url = cfg.llm_url();
     let mut req = ureq::post(&url);
     if let Some(key) = &cfg.llm_key {
@@ -171,5 +183,27 @@ mod tests {
             tidy(notes),
             "# T\n\n# Next Steps\n- **Share** alerts (Ada)\n\n# Topic\n- fact\n"
         );
+    }
+
+    #[test]
+    fn request_merges_per_model_options() {
+        let root = std::env::temp_dir().join(format!("merkwerk-test-opts-{}", std::process::id()));
+        crate::config::set_setting(
+            &root,
+            "llm_options",
+            json!({"m": {"reasoning_effort": "none", "temperature": 1}}),
+        )
+        .unwrap();
+        let cfg = Config {
+            root: root.clone(),
+            ..Config::from_env()
+        };
+        let body = request(&cfg, "m", json!([]));
+        assert_eq!(body["reasoning_effort"], "none");
+        assert_eq!(body["temperature"], 1, "settings win over the defaults");
+        let other = request(&cfg, "other", json!([]));
+        assert!(other.get("reasoning_effort").is_none());
+        assert_eq!(other["temperature"], 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
