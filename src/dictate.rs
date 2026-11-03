@@ -11,29 +11,124 @@ use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::NSString;
 use std::{
     ffi::c_void,
-    sync::{
-        Mutex,
-        atomic::{AtomicU16, Ordering},
-        mpsc,
-    },
+    sync::{Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
 
-/// Dictation keys offered in the menu: setting value, label, macOS virtual key code.
-/// Modifier keys only: holding one sends no key events of its own, so any key press during the
-/// hold means a shortcut (⌘C, ⌥-letter) and cancels the dictation.
-pub const KEYS: [(&str, &str, u16); 6] = [
-    ("off", "Off", 0),
-    ("fn", "fn (set \"Press 🌐 key to\" to \"Do Nothing\")", 63),
-    ("right_command", "Right ⌘", 54),
-    ("right_option", "Right ⌥", 61),
-    ("right_control", "Right ⌃", 62),
-    ("right_shift", "Right ⇧", 60),
+/// Keys a dictation shortcut may use, in display order: macOS virtual key code and label.
+/// Modifiers only: holding them types nothing, so any other key press or click during the hold
+/// means a shortcut (⌘C, ⌥-letter, ⌘-click) and cancels the dictation.
+// ponytail: a letter or Space in the shortcut would also be typed into the app; allowing those
+// needs a CGEventTap that swallows them.
+const MODIFIERS: [(u16, &str); 9] = [
+    (63, "fn"),
+    (59, "⌃"),
+    (62, "Right ⌃"),
+    (58, "⌥"),
+    (61, "Right ⌥"),
+    (56, "⇧"),
+    (60, "Right ⇧"),
+    (55, "⌘"),
+    (54, "Right ⌘"),
 ];
 
-/// Key code of the chosen dictation key, 0 = off. Set at start and from the menu.
-pub static KEY: AtomicU16 = AtomicU16::new(0);
+/// The dictation shortcut: these keys held together. Empty = off.
+pub static SHORTCUT: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+
+/// Recording a new shortcut from the notes window.
+#[derive(Clone, PartialEq)]
+pub enum Capture {
+    Off,
+    /// Waiting for the user to press and release their keys.
+    Listening,
+    Failed(String),
+}
+
+pub static CAPTURE: Mutex<Capture> = Mutex::new(Capture::Off);
+
+/// "⌃ ⌥", "Right ⌘"; empty for no shortcut.
+pub fn label(keys: &[u16]) -> String {
+    MODIFIERS
+        .iter()
+        .filter(|(code, _)| keys.contains(code))
+        .map(|(_, l)| *l)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Names for `MERKWERK_DICTATE` and settings from before shortcuts were recorded, e.g. "right_command"
+/// or "control+option".
+fn named(name: &str) -> Option<u16> {
+    Some(match name.trim() {
+        "fn" => 63,
+        "control" | "ctrl" => 59,
+        "right_control" => 62,
+        "option" | "alt" => 58,
+        "right_option" => 61,
+        "shift" => 56,
+        "right_shift" => 60,
+        "command" | "cmd" => 55,
+        "right_command" => 54,
+        _ => return None,
+    })
+}
+
+/// The shortcut from `MERKWERK_DICTATE`, else `dictate_key` in settings.json (a list of key codes, or
+/// an old single name), else none.
+pub fn configured(cfg: &Config) -> Vec<u16> {
+    let names = |s: &str| s.split('+').filter_map(named).collect::<Vec<_>>();
+    if let Ok(v) = std::env::var("MERKWERK_DICTATE") {
+        return names(&v);
+    }
+    match crate::config::setting(&cfg.root, "dictate_key") {
+        Some(serde_json::Value::Array(codes)) => codes
+            .iter()
+            .filter_map(|c| c.as_u64())
+            .map(|c| c as u16)
+            .filter(|c| MODIFIERS.iter().any(|m| m.0 == *c))
+            .collect(),
+        Some(serde_json::Value::String(s)) => names(&s),
+        _ => vec![],
+    }
+}
+
+/// Sets and saves the shortcut (empty turns dictation off).
+pub fn set_shortcut(cfg: &Config, keys: Vec<u16>) {
+    let _ = crate::config::set_setting(&cfg.root, "dictate_key", serde_json::json!(keys));
+    *SHORTCUT.lock().unwrap() = keys;
+}
+
+/// Waits for the user to press and release a combination of modifier keys and saves it.
+fn capture(cfg: &Config) {
+    let before = presses();
+    let start = Instant::now();
+    let mut seen: Vec<u16> = vec![];
+    while *CAPTURE.lock().unwrap() == Capture::Listening {
+        thread::sleep(Duration::from_millis(10));
+        if presses() != before {
+            *CAPTURE.lock().unwrap() =
+                Capture::Failed("Use only fn, ⌃, ⌥, ⇧ and ⌘: any other key would also be typed into the app.".into());
+            return;
+        }
+        let held: Vec<u16> = MODIFIERS.iter().map(|m| m.0).filter(|k| down(*k)).collect();
+        for k in &held {
+            if !seen.contains(k) {
+                seen.push(*k);
+            }
+        }
+        if !seen.is_empty() && held.is_empty() {
+            set_shortcut(cfg, seen);
+            *CAPTURE.lock().unwrap() = Capture::Off;
+            return;
+        }
+        if seen.is_empty() && start.elapsed() > Duration::from_secs(15) {
+            *CAPTURE.lock().unwrap() = Capture::Off;
+            return;
+        }
+    }
+}
+
 /// What the dictation overlay shows; the UI polls it.
 #[derive(Clone, PartialEq)]
 pub enum Overlay {
@@ -61,10 +156,6 @@ const KEEP_MODEL: Duration = Duration::from_secs(600);
 /// Holds shorter than this are taps or shortcuts; the mic isn't even opened.
 const HOLD: Duration = Duration::from_millis(250);
 
-pub fn code(name: &str) -> u16 {
-    KEYS.iter().find(|k| k.0 == name).map_or(0, |k| k.2)
-}
-
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
@@ -87,13 +178,18 @@ fn presses() -> u32 {
     unsafe { CGEventSourceCounterForEventType(HID, 10) + CGEventSourceCounterForEventType(HID, 1) }
 }
 
+/// The whole shortcut is held.
+fn held(keys: &[u16]) -> bool {
+    !keys.is_empty() && keys.iter().all(|k| down(*k))
+}
+
 fn wait(cond: impl Fn() -> bool) {
     while cond() {
         thread::sleep(Duration::from_millis(10));
     }
 }
 
-/// Polls the dictation key; runs forever on its own thread.
+/// Polls the dictation shortcut; runs forever on its own thread.
 // ponytail: 20 ms polling instead of an event tap; no run loop, no Input Monitoring grant.
 pub fn run(cfg: Config) {
     let mut model: Option<(String, Transcriber)> = None;
@@ -103,15 +199,19 @@ pub fn run(cfg: Config) {
         if model.is_some() && last_used.elapsed() > KEEP_MODEL {
             model = None;
         }
-        let key = KEY.load(Ordering::Relaxed);
-        if key == 0 || !down(key) {
+        if *CAPTURE.lock().unwrap() == Capture::Listening {
+            capture(&cfg);
+            continue;
+        }
+        let keys = SHORTCUT.lock().unwrap().clone();
+        if !held(&keys) {
             continue;
         }
         let before = presses();
         let start = Instant::now();
-        wait(|| down(key) && start.elapsed() < HOLD);
-        if !down(key) || presses() != before {
-            wait(|| down(key));
+        wait(|| held(&keys) && start.elapsed() < HOLD);
+        if !held(&keys) || presses() != before {
+            wait(|| held(&keys));
             continue;
         }
         let (tx, rx) = mpsc::channel();
@@ -120,16 +220,16 @@ pub fn run(cfg: Config) {
             Err(e) => {
                 eprintln!("dictation mic: {e:#}");
                 say(format!("No microphone: {e}"));
-                wait(|| down(key));
+                wait(|| held(&keys));
                 continue;
             }
         };
         show(Overlay::Listening);
-        wait(|| down(key) && presses() == before);
+        wait(|| held(&keys) && presses() == before);
         drop(stream);
         if presses() != before {
             show(Overlay::Hidden);
-            wait(|| down(key));
+            wait(|| held(&keys));
             continue;
         }
         show(Overlay::Transcribing);
@@ -217,10 +317,11 @@ pub fn page_state(cfg: &Config) -> String {
             })
         })
         .collect();
-    let key = KEY.load(Ordering::Relaxed);
+    let capture = CAPTURE.lock().unwrap().clone();
     serde_json::json!({
-        "key": KEYS.iter().find(|k| k.2 == key).map_or("off", |k| k.0),
-        "keys": KEYS.iter().map(|k| [k.0, k.1]).collect::<Vec<_>>(),
+        "shortcut": label(&SHORTCUT.lock().unwrap()),
+        "capturing": capture == Capture::Listening,
+        "error": match capture { Capture::Failed(e) => Some(e), _ => None },
         "trusted": crate::screen::trusted(false),
         "chosen": crate::config::setting(&cfg.root, "dictate_key").is_some(),
         "history": history,
@@ -262,9 +363,13 @@ fn paste(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn keys_and_join() {
-        assert_eq!(super::code("right_command"), 54);
-        assert_eq!(super::code("nonsense"), 0);
+    fn shortcut_names_and_join() {
+        assert_eq!(super::label(&[58, 59]), "⌃ ⌥", "display order, not press order");
+        assert_eq!(super::label(&[54]), "Right ⌘");
+        let names = |s: &str| s.split('+').filter_map(super::named).collect::<Vec<_>>();
+        assert_eq!(names("control+option"), [59, 58]);
+        assert_eq!(names("right_command"), [54]);
+        assert!(names("off").is_empty());
         assert_eq!(super::join([" Hallo ", "", "world."].into_iter()), "Hallo world.");
     }
 }
