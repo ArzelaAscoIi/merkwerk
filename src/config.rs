@@ -120,6 +120,11 @@ impl Config {
         chosen(&self.root, "MERKWERK_LLM_URL", "llm_url", LLM_SERVERS[0].1)
     }
 
+    /// Push-to-talk dictation key (see `dictate::KEYS`): env var, else the menu choice, else off.
+    pub fn dictate_key(&self) -> String {
+        chosen(&self.root, "MERKWERK_DICTATE", "dictate_key", "off")
+    }
+
     /// Screen activity on start: `MERKWERK_SCREEN` (0 or 1), else the menu choice, else on.
     pub fn screen_enabled(&self) -> bool {
         match std::env::var("MERKWERK_SCREEN").ok().as_deref() {

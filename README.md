@@ -120,6 +120,16 @@ Pick both models from the Dock or menu bar menu, no restart needed:
 
 Choices are saved in `~/merkwerk/settings.json`; the environment variables below override them.
 
+**Dictation**
+
+Pick a key under **Dictation key (hold to talk)** in the menu: fn, or the right ⌘, ⌥, ⌃ or ⇧.
+Hold it, speak, let go: the text is transcribed with the selected speech model and pasted into
+the app you are typing in (your clipboard is put back afterwards). Pressing another key or
+clicking while holding cancels, so shortcuts like ⌘C keep working. Pasting needs the
+Accessibility permission merkwerk already asks for. Nothing is saved. The speech model stays
+loaded for 10 minutes after the last dictation so the next one is instant. For fn, set
+System Settings → Keyboard → "Press 🌐 key to" to "Do Nothing".
+
 **Reading**
 
 The notes window opens at launch and with a click on the Dock icon. The **Meetings** tab lists
@@ -252,6 +262,7 @@ override both, but only reach the app if set with `launchctl setenv`.
 | `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr` (apps whose mic use is not a call; also `"ignore"` in `settings.json`) |
 | `MERKWERK_SCREEN` | on (`0` turns screen activity off; also switchable in the menu) |
 | `MERKWERK_SCREEN_IGNORE` | unset (extra apps or windows never captured) |
+| `MERKWERK_DICTATE` | `off` (dictation key: `fn`, `right_command`, `right_option`, `right_control`, `right_shift`; also in the menu) |
 
 ## Limitations
 
