@@ -1,5 +1,6 @@
 //! Push-to-talk dictation: hold the dictation key, speak, let go; the text lands in the focused app.
-//! Same local speech model as meetings, mic only, nothing saved.
+//! Same local speech model as meetings, mic only. Each dictation's text is kept in
+//! `$MERKWERK_DIR/dictations.jsonl` for the history in the notes window; no audio is saved.
 
 use crate::{
     audio::{self, Source},
@@ -11,7 +12,8 @@ use objc2_foundation::NSString;
 use std::{
     ffi::c_void,
     sync::{
-        atomic::{AtomicBool, AtomicU16, Ordering},
+        Mutex,
+        atomic::{AtomicU16, Ordering},
         mpsc,
     },
     thread,
@@ -32,8 +34,26 @@ pub const KEYS: [(&str, &str, u16); 6] = [
 
 /// Key code of the chosen dictation key, 0 = off. Set at start and from the menu.
 pub static KEY: AtomicU16 = AtomicU16::new(0);
-/// Recording a dictation right now (menu bar shows it).
-pub static ACTIVE: AtomicBool = AtomicBool::new(false);
+/// What the dictation overlay shows; the UI polls it.
+#[derive(Clone, PartialEq)]
+pub enum Overlay {
+    Hidden,
+    Listening,
+    Transcribing,
+    /// The dictated text or a problem, shown until the instant passes.
+    Said(String, Instant),
+}
+
+pub static OVERLAY: Mutex<Overlay> = Mutex::new(Overlay::Hidden);
+
+fn show(o: Overlay) {
+    *OVERLAY.lock().unwrap() = o;
+}
+
+/// Show `text` in the overlay for a few seconds.
+fn say(text: impl Into<String>) {
+    show(Overlay::Said(text.into(), Instant::now() + Duration::from_secs(4)));
+}
 
 /// The speech model stays loaded this long after the last dictation, then is released.
 const KEEP_MODEL: Duration = Duration::from_secs(600);
@@ -99,18 +119,20 @@ pub fn run(cfg: Config) {
             Ok(mic) => mic,
             Err(e) => {
                 eprintln!("dictation mic: {e:#}");
+                say(format!("No microphone: {e}"));
                 wait(|| down(key));
                 continue;
             }
         };
-        ACTIVE.store(true, Ordering::Relaxed);
+        show(Overlay::Listening);
         wait(|| down(key) && presses() == before);
         drop(stream);
-        ACTIVE.store(false, Ordering::Relaxed);
         if presses() != before {
+            show(Overlay::Hidden);
             wait(|| down(key));
             continue;
         }
+        show(Overlay::Transcribing);
         let mut samples = vec![];
         for (_, block) in rx.try_iter() {
             resampler.process(&block, &mut samples);
@@ -122,6 +144,7 @@ pub fn run(cfg: Config) {
                 Ok(t) => Some((engine, t)),
                 Err(e) => {
                     eprintln!("dictation model: {e:#}");
+                    say(format!("Speech model missing: {e}"));
                     continue;
                 }
             };
@@ -131,11 +154,21 @@ pub fn run(cfg: Config) {
         match t.run(Source::Me, 0.0, &samples) {
             Ok(segments) => {
                 let text = join(segments.iter().map(|s| s.text.as_str()));
-                if !text.is_empty() {
-                    paste(&text);
+                if text.is_empty() {
+                    say("Didn't catch that");
+                    continue;
                 }
+                remember(&cfg, &text);
+                say(if paste(&text) {
+                    text
+                } else {
+                    format!("Allow Accessibility to paste. Copy it from the notes window: {text}")
+                });
             }
-            Err(e) => eprintln!("dictation: {e:#}"),
+            Err(e) => {
+                eprintln!("dictation: {e:#}");
+                say(format!("Transcription failed: {e}"));
+            }
         }
     }
 }
@@ -148,13 +181,61 @@ fn join<'a>(parts: impl Iterator<Item = &'a str>) -> String {
         .join(" ")
 }
 
-/// Pastes through the clipboard (⌘V), then puts the previous text back.
+fn history_file(cfg: &Config) -> std::path::PathBuf {
+    cfg.root.join("dictations.jsonl")
+}
+
+fn remember(cfg: &Config, text: &str) {
+    use std::io::Write;
+    let line = serde_json::json!({"at": chrono::Local::now().to_rfc3339(), "text": text});
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(history_file(cfg));
+    if let Err(e) = file.and_then(|mut f| writeln!(f, "{line}")) {
+        eprintln!("dictation history: {e}");
+    }
+}
+
+/// What the notes window's Dictation tab shows: chosen key, the options, whether pasting is
+/// allowed, whether a key was ever chosen, and the latest dictations (newest first).
+// ponytail: rereads the history file on every call (once a second while the window is open);
+// cache by mtime if it ever gets big. Only the last 200 are sent.
+pub fn page_state(cfg: &Config) -> String {
+    let history: Vec<serde_json::Value> = std::fs::read_to_string(history_file(cfg))
+        .unwrap_or_default()
+        .lines()
+        .rev()
+        .take(200)
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .map(|v| {
+            let at = chrono::DateTime::parse_from_rfc3339(v["at"].as_str().unwrap_or_default()).ok();
+            serde_json::json!({
+                "day": at.map(|a| a.format("%A, %b %-d").to_string()),
+                "time": at.map(|a| a.format("%H:%M").to_string()),
+                "text": v["text"],
+            })
+        })
+        .collect();
+    let key = KEY.load(Ordering::Relaxed);
+    serde_json::json!({
+        "key": KEYS.iter().find(|k| k.2 == key).map_or("off", |k| k.0),
+        "keys": KEYS.iter().map(|k| [k.0, k.1]).collect::<Vec<_>>(),
+        "trusted": crate::screen::trusted(false),
+        "chosen": crate::config::setting(&cfg.root, "dictate_key").is_some(),
+        "history": history,
+    })
+    .to_string()
+    .replace('<', "\\u003c")
+}
+
+/// Pastes through the clipboard (⌘V), then puts the previous text back. False without Accessibility.
 // ponytail: restores plain text only; an image on the clipboard is lost. Key code 9 is V on
 // QWERTY/QWERTZ; Dvorak would need the layout lookup.
-fn paste(text: &str) {
+fn paste(text: &str) -> bool {
     if !crate::screen::trusted(false) {
         eprintln!("dictation: allow Accessibility for merkwerk to paste");
-        return;
+        return false;
     }
     let pb = NSPasteboard::generalPasteboard();
     let kind = unsafe { NSPasteboardTypeString };
@@ -175,6 +256,7 @@ fn paste(text: &str) {
         pb.clearContents();
         pb.setString_forType(&old, kind);
     }
+    true
 }
 
 #[cfg(test)]

@@ -60,7 +60,25 @@
   }
   #rec.on { background: var(--rec); }
   #rec[hidden] { display: none; }
-  .tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 12px 14px 0; }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; margin: 12px 14px 0; }
+  #dict-new { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  #dict-new button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--on-accent); background: var(--accent);
+    border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
+  #dict-new[hidden] { display: none; }
+  .steps { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 22px; }
+  .steps h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+  .steps .n { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .steps p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+  .ok { color: var(--accent); font-weight: 500; }
+  .act { font: inherit; font-weight: 500; color: var(--on-accent); background: var(--accent); border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
+  #try { width: 100%; min-height: 72px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; outline: none; resize: vertical; }
+  #try:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .history { margin-top: 40px; }
+  .history h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  .said { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .said .ts { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; }
   #blocked { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px; color: var(--text);
     background: color-mix(in srgb, var(--rec) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--rec) 35%, transparent); }
   #blocked button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--on-accent); background: var(--rec);
@@ -208,7 +226,8 @@
 <body>
 <aside>
   <button id="rec" type="button" hidden>Start recording</button>
-  <div class="seg tabs" id="tabs"><button type="button" data-tab="meetings">Meetings</button><button type="button" data-tab="activity">Activity</button></div>
+  <div class="seg tabs" id="tabs"><button type="button" data-tab="meetings">Meetings</button><button type="button" data-tab="activity">Activity</button><button type="button" data-tab="dictation">Dictation</button></div>
+  <div id="dict-new" hidden>New: hold a key to dictate into any app, transcribed on this Mac.<button type="button">Set up dictation</button></div>
   <div id="blocked" hidden>Screen activity is paused: macOS hasn't allowed merkwerk Accessibility access.<button type="button">Open Settings</button></div>
   <div class="search">
     <label class="sr" for="q">Search meetings</label>
@@ -219,6 +238,7 @@
 <main><div class="wrap" id="view"></div></main>
 
 <script id="data" type="application/json">/*DATA*/</script>
+<script id="dictation" type="application/json">/*DICTATION*/</script>
 <script>
 let meetings = JSON.parse(document.getElementById("data").textContent);
 const list = document.getElementById("list");
@@ -248,13 +268,14 @@ const el = (tag, cls, text) => {
 };
 
 function visible() {
+  if (tab === "dictation") return [];
   const term = q.value.trim().toLowerCase();
   return meetings.filter(m => (m.kind === "log") === (tab === "activity") && (!term || m.search.includes(term)));
 }
 
 function renderTabs() {
   for (const b of tabs.children) b.setAttribute("aria-pressed", b.dataset.tab === tab);
-  q.placeholder = tab === "activity" ? "Search activity" : "Search meetings";
+  q.placeholder = { activity: "Search activity", dictation: "Search dictations" }[tab] ?? "Search meetings";
 }
 for (const b of tabs.children) b.onclick = () => switchTab(b.dataset.tab);
 
@@ -262,6 +283,7 @@ function switchTab(to) {
   if (to === tab) return;
   tab = to;
   mode = "notes";
+  if (to === "dictation") dictNew.hidden = true;
   renderTabs();
   const first = visible()[0];
   current = first?.id;
@@ -271,6 +293,11 @@ function switchTab(to) {
 function renderList() {
   list.replaceChildren();
   const items = visible();
+  if (tab === "dictation") {
+    const k = keyLabel();
+    list.append(el("div", "none", k ? `Hold ${k} in any app, speak, let go.` : "Choose a dictation key to start."));
+    return;
+  }
   if (!items.length) {
     const none = tab === "activity"
       ? (q.value.trim() ? "No activity matches." : "No screen activity yet. Turn it on in the menu bar.")
@@ -314,6 +341,7 @@ function renderView(animate = true) {
   rendering = true; // removing a focused input may fire blur; that is not the user leaving it
   view.replaceChildren();
   rendering = false;
+  if (tab === "dictation") { renderDictation(); return; }
   const m = meetings.find(x => x.id === current);
   if (!m) {
     const e = el("div", "empty");
@@ -538,6 +566,109 @@ function markNextSteps(n) {
   }
 }
 
+// Dictation tab state from the app (window.merkwerkDictation): key, keys, trusted, chosen, history.
+let dictation = null;
+// What is typed in the "Try it" box; survives re-renders when a dictation lands in it.
+let tryDraft = "";
+let tryFocused = false;
+try { dictation = JSON.parse(document.getElementById("dictation").textContent); } catch { /* opened outside the app */ }
+const post = msg => window.webkit?.messageHandlers?.merkwerk?.postMessage(JSON.stringify(msg));
+// "Right ⌘" from the app's label, without the fn setup hint.
+const keyLabel = () => {
+  const k = dictation?.keys.find(k => k[0] === dictation.key);
+  return k && k[0] !== "off" ? k[1].replace(/ \(.*\)$/, "") : null;
+};
+
+function renderDictation() {
+  rendering = true;
+  view.replaceChildren();
+  rendering = false;
+  view.append(el("h1", "title", "Dictation"));
+  view.append(el("span", "meta", "Hold a key in any app, speak, let go: the words are typed where your cursor is. " +
+    "Everything is transcribed on this Mac with the speech model chosen in the menu."));
+  if (!dictation) return;
+  const steps = el("ol", "steps");
+  const step = (n, title, ...body) => {
+    const li = el("li");
+    const h = el("h2");
+    h.append(el("span", "n", n), title);
+    li.append(h, ...body);
+    steps.append(li);
+  };
+
+  const seg = el("div", "seg");
+  seg.setAttribute("role", "group");
+  seg.setAttribute("aria-label", "Dictation key");
+  for (const [name, label] of dictation.keys) {
+    const b = el("button", null, label.replace(/ \(.*\)$/, ""));
+    b.setAttribute("aria-pressed", name === dictation.key);
+    b.onclick = () => { post({ action: "dictate_key", key: name }); dictation.key = name; dictation.chosen = true; renderDictation(); renderList(); };
+    seg.append(b);
+  }
+  const keyHelp = dictation.key === "fn"
+    ? el("p", null, "For fn, set System Settings → Keyboard → “Press 🌐 key to” to “Do Nothing”, or macOS reacts to it too.")
+    : el("p", null, "A key you rarely hold on its own works best. Pressing another key while holding cancels, so shortcuts keep working.");
+  step("1", "Choose the key to hold", seg, keyHelp);
+
+  if (dictation.trusted) {
+    step("2", "Allow pasting", el("span", "ok", "✓ merkwerk may paste into other apps."));
+  } else {
+    const b = el("button", "act", "Open Accessibility settings");
+    b.onclick = () => post({ action: "accessibility" });
+    step("2", "Allow pasting", b, el("p", null, "Turn on merkwerk in the list. Until then the words show on screen and in the history below, but aren't typed."));
+  }
+
+  const k = keyLabel();
+  const t = el("textarea");
+  t.id = "try";
+  t.value = tryDraft;
+  t.placeholder = k ? `Click here, hold ${k}, say a sentence, let go.` : "Choose a key first.";
+  t.oninput = () => { tryDraft = t.value; };
+  t.onfocus = () => { tryFocused = true; };
+  t.onblur = () => { if (!rendering) tryFocused = false; };
+  step("3", "Try it", t, el("p", null, "While you hold the key, a bar at the bottom of the screen says “Listening”; then it shows what you said."));
+  view.append(steps);
+
+  const term = q.value.trim().toLowerCase();
+  const items = dictation.history.filter(d => !term || d.text.toLowerCase().includes(term));
+  const hist = el("div", "history");
+  hist.append(el("h2", null, "History"));
+  if (!items.length) hist.append(el("div", "empty", term ? "No dictation matches." : "Your dictations show up here."));
+  let day = null;
+  for (const d of items) {
+    if (d.day !== day) { day = d.day; hist.append(el("div", "day", day)); }
+    const row = el("div", "said");
+    const copy = el("button", "copy", "Copy");
+    copy.onclick = () => {
+      const area = el("textarea");
+      area.value = d.text;
+      document.body.append(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+    };
+    row.append(el("span", "ts", d.time), el("span", null, d.text), copy);
+    hist.append(row);
+  }
+  view.append(hist);
+  if (tryFocused) {
+    t.focus();
+    t.selectionStart = t.selectionEnd = t.value.length;
+  }
+}
+
+const dictNew = document.getElementById("dict-new");
+dictNew.querySelector("button").onclick = () => switchTab("dictation");
+// Called by the app whenever the Dictation tab's state changes.
+dictNew.hidden = !dictation || dictation.chosen;
+window.merkwerkDictation = d => {
+  dictation = d;
+  dictNew.hidden = d.chosen || tab === "dictation";
+  if (tab === "dictation") { renderList(); renderView(false); }
+};
+
 function emptyNotes(m) {
   const e = el("div", "empty");
   if (m.live) e.textContent = "Notes are written when the meeting ends. The transcript fills in while it runs.";
@@ -675,6 +806,7 @@ window.merkwerkUpdate = data => {
 const [hashId, hashMode] = decodeURIComponent(location.hash.slice(1)).split("/");
 const linked = meetings.find(m => m.id === hashId);
 if (linked?.kind === "log") tab = "activity";
+if (hashId === "dictation") { tab = "dictation"; dictNew.hidden = true; }
 current = linked ? hashId : visible()[0]?.id;
 if (hashMode === "transcript") mode = "transcript";
 renderTabs();
