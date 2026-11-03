@@ -122,6 +122,10 @@ define_class!(
                 Some(Pick::Llm(model)) => {
                     let _ = crate::config::set_setting(&cfg.root, "llm_model", model.into());
                 }
+                Some(Pick::Dictate(name)) => {
+                    crate::dictate::KEY.store(crate::dictate::code(&name), Ordering::Relaxed);
+                    let _ = crate::config::set_setting(&cfg.root, "dictate_key", name.into());
+                }
                 Some(Pick::Server(url)) => {
                     let _ = crate::config::set_setting(&cfg.root, "llm_url", url.into());
                     SERVER_MODELS.lock().unwrap().clear();
@@ -285,6 +289,7 @@ enum Pick {
     Engine(String),
     Llm(String),
     Server(String),
+    Dictate(String),
 }
 
 /// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
@@ -415,6 +420,9 @@ fn badge() -> String {
 }
 
 fn title() -> String {
+    if crate::dictate::ACTIVE.load(Ordering::Relaxed) {
+        return "🎙 mw".into();
+    }
     if let Some((_, since)) = &*RECORDING.lock().unwrap() {
         let s = since.elapsed().as_secs();
         return format!("● {:02}:{:02}", s / 60, s % 60);
@@ -523,6 +531,12 @@ fn entries(store: &Store) -> Vec<Row> {
             .map(|m| (m.clone(), same(&m), Pick::Llm(m)))
             .collect();
         rows.push(Row::Choice("Notes model", notes));
+        let key = crate::dictate::KEY.load(Ordering::Relaxed);
+        let keys = crate::dictate::KEYS
+            .iter()
+            .map(|(name, label, code)| (label.to_string(), *code == key, Pick::Dictate(name.to_string())))
+            .collect();
+        rows.push(Row::Choice("Dictation key (hold to talk)", keys));
     }
     rows.push(Row::Notes);
     rows.push(Row::Separator);
