@@ -122,13 +122,22 @@ Choices are saved in `~/merkwerk/settings.json`; the environment variables below
 
 **Dictation**
 
-Pick a key under **Dictation key (hold to talk)** in the menu: fn, or the right ⌘, ⌥, ⌃ or ⇧.
-Hold it, speak, let go: the text is transcribed with the selected speech model and pasted into
-the app you are typing in (your clipboard is put back afterwards). Pressing another key or
-clicking while holding cancels, so shortcuts like ⌘C keep working. Pasting needs the
-Accessibility permission merkwerk already asks for. Nothing is saved. The speech model stays
-loaded for 10 minutes after the last dictation so the next one is instant. For fn, set
-System Settings → Keyboard → "Press 🌐 key to" to "Do Nothing".
+Open the **Dictation** tab in the notes window (a banner points there until you set it up):
+
+1. Choose the key to hold: fn, or the right ⌘, ⌥, ⌃ or ⇧ (also in the menu).
+2. Allow Accessibility, so merkwerk can paste.
+3. Try it in the box on that page.
+
+Hold the key in any app, speak, let go. A bar at the bottom of the screen says "Listening", then
+shows what you said, and the text is pasted where your cursor is (your clipboard is put back
+afterwards). Pressing another key or clicking while holding cancels, so shortcuts like ⌘C keep
+working. Every dictation is listed in the tab's history with a Copy button (text only, kept in
+`~/merkwerk/dictations.jsonl`; no audio is saved). The speech model stays loaded for 10 minutes
+after the last dictation so the next one is instant. For fn, set System Settings → Keyboard →
+"Press 🌐 key to" to "Do Nothing".
+
+During a recording, hover the pill at the top of the screen to see the latest transcribed lines.
+Calls are transcribed in 30-second chunks, so they trail the conversation by up to that much.
 
 **Reading**
 

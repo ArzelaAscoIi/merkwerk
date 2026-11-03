@@ -53,6 +53,7 @@ const CALL_IDLE: Duration = Duration::from_secs(15);
 fn main() -> Result<()> {
     let cfg = Config::from_env();
     let store = Store { root: cfg.root.clone() };
+    dictate::KEY.store(dictate::code(&cfg.dictate_key()), Ordering::Relaxed);
     // Finder may pass a process serial number (-psn_...) to apps it launches.
     let args: Vec<String> = env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
@@ -114,7 +115,6 @@ fn watch(cfg: &Config, store: &Store) -> Result<()> {
     ui::SCREEN.store(cfg.screen_enabled(), Ordering::Relaxed);
     let (c, s) = (cfg.clone(), store.clone());
     thread::spawn(move || activity::run(&c, &s));
-    dictate::KEY.store(dictate::code(&cfg.dictate_key()), Ordering::Relaxed);
     let c = cfg.clone();
     thread::spawn(move || dictate::run(c));
     let (c, s) = (cfg.clone(), store.clone());
