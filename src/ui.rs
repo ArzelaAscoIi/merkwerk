@@ -37,6 +37,8 @@ use std::{
 pub static RECORDING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 /// Ids of meetings still being transcribed / summarized.
 pub static FINISHING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The menu asked for the Dictation tab; switched to on the next refresh, once the page has loaded.
+static SHOW_DICTATION: AtomicBool = AtomicBool::new(false);
 /// Menu clicks, consumed by the watch loop.
 pub static START: AtomicBool = AtomicBool::new(false);
 pub static STOP: AtomicBool = AtomicBool::new(false);
@@ -103,6 +105,12 @@ define_class!(
             open_notes(MainThreadMarker::from(self));
         }
 
+        #[unsafe(method(dictation:))]
+        fn dictation(&self, _item: &NSMenuItem) {
+            open_notes(MainThreadMarker::from(self));
+            SHOW_DICTATION.store(true, Ordering::Relaxed);
+        }
+
         #[unsafe(method(pick:))]
         fn pick(&self, item: &NSMenuItem) {
             let pick = PICKS.with_borrow(|p| p.get(item.tag() as usize).cloned());
@@ -123,10 +131,6 @@ define_class!(
                 }
                 Some(Pick::Llm(model)) => {
                     let _ = crate::config::set_setting(&cfg.root, "llm_model", model.into());
-                }
-                Some(Pick::Dictate(name)) => {
-                    crate::dictate::KEY.store(crate::dictate::code(&name), Ordering::Relaxed);
-                    let _ = crate::config::set_setting(&cfg.root, "dictate_key", name.into());
                 }
                 Some(Pick::Server(url)) => {
                     let _ = crate::config::set_setting(&cfg.root, "llm_url", url.into());
@@ -204,11 +208,17 @@ define_class!(
             match req["action"].as_str() {
                 Some("start") => return START.store(true, Ordering::Relaxed),
                 Some("stop") => return STOP.store(true, Ordering::Relaxed),
-                Some("dictate_key") => {
-                    let name = req["key"].as_str().unwrap_or("off").to_string();
-                    crate::dictate::KEY.store(crate::dictate::code(&name), Ordering::Relaxed);
+                Some("record_shortcut") => {
+                    *crate::dictate::CAPTURE.lock().unwrap() = crate::dictate::Capture::Listening;
+                    return;
+                }
+                Some("cancel_shortcut") => {
+                    *crate::dictate::CAPTURE.lock().unwrap() = crate::dictate::Capture::Off;
+                    return;
+                }
+                Some("clear_shortcut") => {
                     if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
-                        let _ = crate::config::set_setting(&cfg.root, "dictate_key", name.into());
+                        crate::dictate::set_shortcut(&cfg, vec![]);
                     }
                     return;
                 }
@@ -299,7 +309,6 @@ enum Pick {
     Engine(String),
     Llm(String),
     Server(String),
-    Dictate(String),
 }
 
 /// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
@@ -463,6 +472,8 @@ enum Row {
     Auto(bool),
     Screen(bool),
     Notes,
+    /// Opens the notes window on the Dictation tab.
+    Dictation(String),
     Open(String, PathBuf),
 }
 
@@ -543,12 +554,12 @@ fn entries(store: &Store) -> Vec<Row> {
             .map(|m| (m.clone(), same(&m), Pick::Llm(m)))
             .collect();
         rows.push(Row::Choice("Notes model", notes));
-        let key = crate::dictate::KEY.load(Ordering::Relaxed);
-        let keys = crate::dictate::KEYS
-            .iter()
-            .map(|(name, label, code)| (label.to_string(), *code == key, Pick::Dictate(name.to_string())))
-            .collect();
-        rows.push(Row::Choice("Dictation key (hold to talk)", keys));
+        let shortcut = crate::dictate::label(&crate::dictate::SHORTCUT.lock().unwrap());
+        rows.push(Row::Dictation(if shortcut.is_empty() {
+            "Set up dictation…".into()
+        } else {
+            format!("Dictation: hold {shortcut}…")
+        }));
     }
     rows.push(Row::Notes);
     rows.push(Row::Separator);
@@ -622,6 +633,9 @@ fn menu(mtm: MainThreadMarker, handler: &Handler, rows: &[Row]) -> Retained<NSMe
                     NSControlStateValueOff
                 });
             }
+            Row::Dictation(label) => unsafe {
+                add(label, Some(sel!(dictation:)), ns_string!("")).setTarget(Some(handler))
+            },
             Row::Notes => unsafe { add("Open notes", Some(sel!(notes:)), ns_string!("o")).setTarget(Some(handler)) },
             Row::Open(label, path) => {
                 let item = add(label, Some(sel!(open:)), ns_string!(""));
@@ -725,6 +739,9 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             screen_blocked()
         );
         unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
+        if SHOW_DICTATION.swap(false, Ordering::Relaxed) {
+            unsafe { web.evaluateJavaScript_completionHandler(ns_string!("switchTab(\"dictation\")"), None) };
+        }
         // The Dictation tab: sent only when it changed.
         let state = crate::dictate::page_state(cfg);
         if DICTATION_SHOWN.with_borrow(|s| *s != state) {

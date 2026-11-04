@@ -124,11 +124,13 @@ Choices are saved in `~/merkwerk/settings.json`; the environment variables below
 
 Open the **Dictation** tab in the notes window (a banner points there until you set it up):
 
-1. Choose the key to hold: fn, or the right ⌘, ⌥, ⌃ or ⇧ (also in the menu).
+1. Click **Record shortcut** and press the keys you want to hold, e.g. ⌃ ⌥ or Right ⌘. Modifier
+   keys only (fn, ⌃, ⌥, ⇧, ⌘, left or right), alone or together: a letter or Space would also be
+   typed into the app.
 2. Allow Accessibility, so merkwerk can paste.
 3. Try it in the box on that page.
 
-Hold the key in any app, speak, let go. A bar at the bottom of the screen says "Listening", then
+Hold the shortcut in any app, speak, let go. A bar at the bottom of the screen says "Listening", then
 shows what you said, and the text is pasted where your cursor is (your clipboard is put back
 afterwards). Pressing another key or clicking while holding cancels, so shortcuts like ⌘C keep
 working. Every dictation is listed in the tab's history with a Copy button (text only, kept in
@@ -271,7 +273,7 @@ override both, but only reach the app if set with `launchctl setenv`.
 | `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr` (apps whose mic use is not a call; also `"ignore"` in `settings.json`) |
 | `MERKWERK_SCREEN` | on (`0` turns screen activity off; also switchable in the menu) |
 | `MERKWERK_SCREEN_IGNORE` | unset (extra apps or windows never captured) |
-| `MERKWERK_DICTATE` | `off` (dictation key: `fn`, `right_command`, `right_option`, `right_control`, `right_shift`; also in the menu) |
+| `MERKWERK_DICTATE` | unset (dictation shortcut as names joined by `+`, e.g. `control+option` or `right_command`; normally recorded in the notes window) |
 
 ## Limitations
 

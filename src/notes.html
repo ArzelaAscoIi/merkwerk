@@ -71,6 +71,12 @@
   .steps .n { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
   .steps p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
   .ok { color: var(--accent); font-weight: 500; }
+  .keyrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .combo { display: inline-flex; gap: 4px; }
+  .combo kbd { font: 15px var(--sans); color: var(--text); padding: 3px 9px; border-radius: 6px; border-bottom-width: 2px; }
+  .capturing { color: var(--accent); font-weight: 500; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .err { color: var(--rec) !important; }
   .act { font: inherit; font-weight: 500; color: var(--on-accent); background: var(--accent); border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
   #try { width: 100%; min-height: 72px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
     border-radius: 8px; padding: 8px 10px; outline: none; resize: vertical; }
@@ -295,7 +301,7 @@ function renderList() {
   const items = visible();
   if (tab === "dictation") {
     const k = keyLabel();
-    list.append(el("div", "none", k ? `Hold ${k} in any app, speak, let go.` : "Choose a dictation key to start."));
+    list.append(el("div", "none", k ? `Hold ${k} in any app, speak, let go.` : "Record a dictation shortcut to start."));
     return;
   }
   if (!items.length) {
@@ -566,18 +572,15 @@ function markNextSteps(n) {
   }
 }
 
-// Dictation tab state from the app (window.merkwerkDictation): key, keys, trusted, chosen, history.
+// Dictation tab state from the app (window.merkwerkDictation): shortcut ("⌃ ⌥", "" = off),
+// capturing, error, trusted, chosen, history.
 let dictation = null;
 // What is typed in the "Try it" box; survives re-renders when a dictation lands in it.
 let tryDraft = "";
 let tryFocused = false;
 try { dictation = JSON.parse(document.getElementById("dictation").textContent); } catch { /* opened outside the app */ }
 const post = msg => window.webkit?.messageHandlers?.merkwerk?.postMessage(JSON.stringify(msg));
-// "Right ⌘" from the app's label, without the fn setup hint.
-const keyLabel = () => {
-  const k = dictation?.keys.find(k => k[0] === dictation.key);
-  return k && k[0] !== "off" ? k[1].replace(/ \(.*\)$/, "") : null;
-};
+const keyLabel = () => dictation?.shortcut || null;
 
 function renderDictation() {
   rendering = true;
@@ -596,19 +599,33 @@ function renderDictation() {
     steps.append(li);
   };
 
-  const seg = el("div", "seg");
-  seg.setAttribute("role", "group");
-  seg.setAttribute("aria-label", "Dictation key");
-  for (const [name, label] of dictation.keys) {
-    const b = el("button", null, label.replace(/ \(.*\)$/, ""));
-    b.setAttribute("aria-pressed", name === dictation.key);
-    b.onclick = () => { post({ action: "dictate_key", key: name }); dictation.key = name; dictation.chosen = true; renderDictation(); renderList(); };
-    seg.append(b);
+  const keyRow = el("div", "keyrow");
+  if (dictation.capturing) {
+    keyRow.append(el("span", "capturing", "Press your keys, then let go…"));
+    const cancel = el("button", "copy", "Cancel");
+    cancel.onclick = () => { post({ action: "cancel_shortcut" }); dictation.capturing = false; renderDictation(); };
+    keyRow.append(cancel);
+  } else {
+    if (dictation.shortcut) {
+      const kb = el("span", "combo");
+      for (const k of dictation.shortcut.split(" ")) kb.append(el("kbd", null, k));
+      keyRow.append(kb);
+    }
+    const rec = el("button", "act", dictation.shortcut ? "Change" : "Record shortcut");
+    rec.onclick = () => { post({ action: "record_shortcut" }); dictation.capturing = true; dictation.error = null; renderDictation(); };
+    keyRow.append(rec);
+    if (dictation.shortcut) {
+      const off = el("button", "copy", "Turn off");
+      off.onclick = () => { post({ action: "clear_shortcut" }); dictation.shortcut = ""; renderDictation(); renderList(); };
+      keyRow.append(off);
+    }
   }
-  const keyHelp = dictation.key === "fn"
-    ? el("p", null, "For fn, set System Settings → Keyboard → “Press 🌐 key to” to “Do Nothing”, or macOS reacts to it too.")
-    : el("p", null, "A key you rarely hold on its own works best. Pressing another key while holding cancels, so shortcuts keep working.");
-  step("1", "Choose the key to hold", seg, keyHelp);
+  const keyHelp = dictation.error
+    ? el("p", "err", dictation.error)
+    : el("p", null, "Use modifier keys: fn, ⌃, ⌥, ⇧, ⌘, alone or together (e.g. ⌃ ⌥ or Right ⌘). " +
+        "Pressing another key while holding cancels, so shortcuts keep working. " +
+        "With fn, set System Settings → Keyboard → “Press 🌐 key to” to “Do Nothing”.");
+  step("1", "Record the shortcut you hold to talk", keyRow, keyHelp);
 
   if (dictation.trusted) {
     step("2", "Allow pasting", el("span", "ok", "✓ merkwerk may paste into other apps."));
@@ -622,7 +639,7 @@ function renderDictation() {
   const t = el("textarea");
   t.id = "try";
   t.value = tryDraft;
-  t.placeholder = k ? `Click here, hold ${k}, say a sentence, let go.` : "Choose a key first.";
+  t.placeholder = k ? `Click here, hold ${k}, say a sentence, let go.` : "Record a shortcut first.";
   t.oninput = () => { tryDraft = t.value; };
   t.onfocus = () => { tryFocused = true; };
   t.onblur = () => { if (!rendering) tryFocused = false; };
