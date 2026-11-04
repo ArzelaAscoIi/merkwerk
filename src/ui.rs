@@ -791,32 +791,31 @@ fn pill_state() -> PillState {
     }
 }
 
-/// The last few transcribed lines of the meeting being recorded, for the hovered pill.
-/// Calls are transcribed in 30 s chunks, so this trails the conversation by up to that much.
-fn latest_said() -> String {
+/// The last two transcribed lines of the meeting being recorded, as (speaker, text), for the
+/// hovered pill. Calls are transcribed in 30 s chunks, so this trails the conversation by up to that.
+fn latest_said() -> Vec<(String, String)> {
     let Some((_, store)) = STORE.with_borrow(|s| s.clone()) else {
-        return String::new();
+        return vec![];
     };
     let Some(m) = store.list().into_iter().find(|m| store.live(m)) else {
-        return String::new();
+        return vec![];
     };
     let them = store.them_name(&m.id).unwrap_or_else(|| "Them".into());
     let segments = store.segments(&m.id);
     if segments.is_empty() {
-        return "The transcript starts after the first 30 seconds.".into();
+        return vec![(String::new(), "Transcript starts after the first 30 seconds".into())];
     }
-    segments[segments.len().saturating_sub(3)..]
+    segments[segments.len().saturating_sub(SAID_LINES)..]
         .iter()
         .map(|s| {
             let who = if s.source == crate::audio::Source::Me {
-                "Me"
+                "Me".into()
             } else {
-                them.as_str()
+                them.clone()
             };
-            format!("{who}: {}", s.text)
+            (who, s.text.clone())
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
 /// Floating pill at the top of the screen, on every desktop: the recording indicator and the
@@ -830,7 +829,9 @@ struct Pill {
     secondary: Retained<NSButton>,
     always: Retained<NSButton>,
     /// The latest transcript lines, shown under the row while hovering a recording.
-    said: Retained<NSTextField>,
+    said: Retained<NSView>,
+    /// One (speaker, text) pair of labels per transcript line, oldest first.
+    lines: Vec<(Retained<NSTextField>, Retained<NSTextField>)>,
     compact: Cell<bool>,
     /// Hover expands only once the mouse has left the pill since recording began, so the click on
     /// Record can't turn into a click on Stop.
@@ -844,7 +845,8 @@ const PILL_W: f64 = 380.0;
 const PILL_H: f64 = 28.0;
 const PILL_COMPACT_W: f64 = 76.0;
 /// Extra height of the hovered recording pill for the latest transcript lines.
-const SAID_H: f64 = 50.0;
+const SAID_H: f64 = 44.0;
+const SAID_LINES: usize = 2;
 
 /// The notes page's dark-mode accent, #3cc497; the pill is always dark.
 fn accent() -> Retained<NSColor> {
@@ -921,15 +923,32 @@ impl Pill {
         let always = button(sel!(always:), PILL_W - 220.0, 56.0, NSControlSize::Small);
         always.setTitle(ns_string!("Always"));
         always.setToolTip(Some(ns_string!("Record this call and every call from now on")));
-        let said = NSTextField::wrappingLabelWithString(ns_string!(""), mtm);
-        said.setFrame(NSRect::new(
-            NSPoint::new(14.0, 6.0),
-            NSSize::new(PILL_W - 28.0, SAID_H - 8.0),
-        ));
-        said.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.8, 1.0)));
-        said.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-        said.setMaximumNumberOfLines(3);
-        said.setLineBreakMode(NSLineBreakMode::ByTruncatingHead);
+        // Caption lines under the row: speaker in grey, then one line of text that keeps the
+        // newest words visible.
+        let said = NSView::initWithFrame(
+            mtm.alloc(),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PILL_W, SAID_H)),
+        );
+        let lines = (0..SAID_LINES)
+            .map(|i| {
+                let y = SAID_H - 8.0 - 17.0 * (i + 1) as f64;
+                let who = NSTextField::labelWithString(ns_string!(""), mtm);
+                who.setFrame(NSRect::new(NSPoint::new(16.0, y), NSSize::new(56.0, 15.0)));
+                who.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.55, 1.0)));
+                who.setFont(Some(&NSFont::systemFontOfSize_weight(11.0, unsafe {
+                    NSFontWeightMedium
+                })));
+                who.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+                let text = NSTextField::labelWithString(ns_string!(""), mtm);
+                text.setFrame(NSRect::new(NSPoint::new(76.0, y), NSSize::new(PILL_W - 92.0, 15.0)));
+                text.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.92, 1.0)));
+                text.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+                text.setLineBreakMode(NSLineBreakMode::ByTruncatingHead);
+                said.addSubview(&who);
+                said.addSubview(&text);
+                (who, text)
+            })
+            .collect();
         said.setHidden(true);
         root.addSubview(&said);
         panel.setContentView(Some(&root));
@@ -941,6 +960,7 @@ impl Pill {
             secondary,
             always,
             said,
+            lines,
             compact: Cell::new(false),
             armed: Cell::new(false),
             text: RefCell::default(),
@@ -986,8 +1006,21 @@ impl Pill {
         } else {
             130.0
         };
+        // The row sits on top; the captions, when shown, take the space below it.
+        let y = if self.said.isHidden() { 6.0 } else { SAID_H + 6.0 };
         self.label
-            .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
+            .setFrame(NSRect::new(NSPoint::new(26.0, y), NSSize::new(width, 16.0)));
+    }
+
+    fn show_said(&self) {
+        let said = latest_said();
+        for (i, (who, text)) in self.lines.iter().enumerate() {
+            // Fewer lines than rows: fill from the bottom, so the newest is always last.
+            let line = (i + said.len()).checked_sub(SAID_LINES).and_then(|k| said.get(k));
+            let (w, t) = line.map_or(("", ""), |(w, t)| (w.as_str(), t.as_str()));
+            who.setStringValue(&NSString::from_str(w));
+            text.setStringValue(&NSString::from_str(t));
+        }
     }
 
     /// Resizes around the same center; the compact pill shows only the dot and the time.
@@ -998,10 +1031,9 @@ impl Pill {
             return;
         }
         self.compact.set(compact);
-        self.set_label();
         self.primary.setHidden(compact);
         if tall {
-            self.said.setStringValue(&NSString::from_str(&latest_said()));
+            self.show_said();
         }
         self.said.setHidden(!tall);
         let width = if compact { PILL_COMPACT_W } else { PILL_W };
@@ -1013,6 +1045,8 @@ impl Pill {
             NSRect::new(NSPoint::new(x, top - height), NSSize::new(width, height)),
             true,
         );
+        // After the resize: the row's labels move with the top edge, so place them in the final size.
+        self.set_label();
         self.panel.invalidateShadow();
     }
 
@@ -1055,7 +1089,7 @@ impl Pill {
         *self.text.borrow_mut() = (short, full);
         self.set_label();
         if recording && !self.said.isHidden() {
-            self.said.setStringValue(&NSString::from_str(&latest_said()));
+            self.show_said();
         }
         if !self.panel.isVisible() {
             // Where it was left (its center, as it may have been compact then), if that screen is
