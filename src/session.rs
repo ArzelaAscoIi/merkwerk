@@ -235,7 +235,7 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     // Rendered after the calendar lookup: a 1:1's invitee names the `them` lines.
     let transcript = store.transcript(id);
     store.write(id, "transcript.md", &transcript)?;
-    let summary = summarize::summarize(cfg, &meta, &transcript)?;
+    let summary = summarize::summarize(cfg, &meta, &transcript, &store.context_prompt(Some(id)))?;
     store.write(id, "summary.md", &summary)?;
     // Reload: the title or tags may have been edited in the notes window while summarizing.
     let mut meta = store.load(id)?;

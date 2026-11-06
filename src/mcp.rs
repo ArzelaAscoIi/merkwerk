@@ -36,6 +36,7 @@ pub fn handle(cfg: &Config, store: &Store, msg: &Value) -> Option<Value> {
             "protocolVersion": PROTOCOL,
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "merkwerk", "version": env!("CARGO_PKG_VERSION")},
+            "instructions": instructions(store),
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({"tools": tools()})),
@@ -56,6 +57,25 @@ pub fn handle(cfg: &Config, store: &Store, msg: &Value) -> Option<Value> {
         Ok(r) => json!({"jsonrpc": "2.0", "id": id, "result": r}),
         Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": e}),
     })
+}
+
+/// Sent once per session: how to keep corrections, and the ones already saved for all meetings.
+fn instructions(store: &Store) -> String {
+    let mut text = String::from(
+        "merkwerk holds the user's meetings, screen activity and work logs. Transcripts come from local \
+speech recognition, so names and terms can be misheard, and `them` is everyone on the other end. When the \
+user corrects something (a misheard name, who said what, who someone is, missing background), save it \
+with add_context: for all meetings, or for one with meeting_id. Summaries, answers and later sessions then \
+use it.",
+    );
+    let notes = store.context(None);
+    if !notes.is_empty() {
+        text += "\n\nSaved corrections (always true):";
+        for n in notes {
+            text += &format!("\n- {n}");
+        }
+    }
+    text
 }
 
 fn tools() -> Value {
@@ -110,6 +130,23 @@ fn tools() -> Value {
             }},
         },
         {
+            "name": "add_context",
+            "description": "Save a correction or background note so merkwerk gets it right from now on: a misheard name ('Kjartur is Hjoetur'), who a speaker is ('them in this meeting is Anna from Acme'), who someone is ('Robin leads the Agents team') or context a summary missed. Without meeting_id it applies to all meetings and work logs; with it, to that meeting only. Used by every later summary, answer and MCP session. Set rewrite_notes to rewrite that meeting's notes with it now (takes a minute).",
+            "inputSchema": {"type": "object", "required": ["note"], "properties": {
+                "note": {"type": "string", "description": "One plain sentence, written as a fact."},
+                "meeting_id": {"type": "string", "description": "Only for this meeting (default: all)."},
+                "rewrite_notes": {"type": "boolean", "description": "With meeting_id: rewrite its notes now."},
+            }},
+        },
+        {
+            "name": "remove_context",
+            "description": "Delete a saved correction that turned out wrong, by its exact text (as listed in the server instructions or get_meetings).",
+            "inputSchema": {"type": "object", "required": ["note"], "properties": {
+                "note": {"type": "string"},
+                "meeting_id": {"type": "string", "description": "The meeting it was saved for (default: all meetings)."},
+            }},
+        },
+        {
             "name": "search_meetings",
             "description": "Case-insensitive text search across all transcripts and summaries. Returns matching lines per meeting.",
             "inputSchema": {"type": "object", "required": ["query"], "properties": {
@@ -139,7 +176,11 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
             let mut out = vec![];
             for id in ids.iter().filter_map(Value::as_str) {
                 out.push(match store.load(id) {
-                    Ok(meta) => json!({"meta": meta, "summary": store.read(id, "summary.md")}),
+                    Ok(meta) => json!({
+                        "meta": meta,
+                        "summary": store.read(id, "summary.md"),
+                        "corrections": store.context(Some(id)),
+                    }),
                     Err(e) => json!({"id": id, "error": e.to_string()}),
                 });
             }
@@ -150,7 +191,14 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
             store.load(id)?;
             let offset = args["offset"].as_u64().unwrap_or(0) as usize;
             let limit = args["limit"].as_u64().map_or(DEFAULT_LIMIT, |l| l as usize);
-            page(&store.transcript(id), offset, limit)
+            // The raw transcript keeps its mistakes; the corrections go on top of the first page.
+            let fixes = store.context_prompt(Some(id));
+            let head = if offset == 0 && !fixes.is_empty() {
+                format!("{}\n\n", fixes.trim_start())
+            } else {
+                String::new()
+            };
+            head + &page(&store.transcript(id), offset, limit)
         }
         "search_meetings" => {
             let q = args["query"].as_str().context("query required")?.to_lowercase();
@@ -168,6 +216,39 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
                 }
             }
             if out.is_empty() { "no matches".into() } else { out }
+        }
+        "add_context" => {
+            let note = args["note"].as_str().context("note required")?;
+            let id = args["meeting_id"].as_str();
+            store.add_context(id, note)?;
+            match id {
+                Some(id) if args["rewrite_notes"].as_bool().unwrap_or(false) => {
+                    // finalize deletes a meeting with an empty transcript; a running one finishes on its own.
+                    anyhow::ensure!(
+                        !store.live(&store.load(id)?),
+                        "Saved; the notes are written when the meeting ends."
+                    );
+                    anyhow::ensure!(
+                        !store.transcript(id).trim().is_empty(),
+                        "Saved; this meeting has no transcript to rewrite."
+                    );
+                    crate::session::finalize(cfg, store, id)?;
+                    format!(
+                        "Saved for {id}; notes rewritten:\n\n{}",
+                        store.read(id, "summary.md").unwrap_or_default()
+                    )
+                }
+                Some(id) => format!("Saved for {id}."),
+                None => "Saved for all meetings.".into(),
+            }
+        }
+        "remove_context" => {
+            let note = args["note"].as_str().context("note required")?;
+            if store.remove_context(args["meeting_id"].as_str(), note)? {
+                "Removed.".into()
+            } else {
+                bail!("no saved correction with exactly that text")
+            }
         }
         "get_activity" => {
             let excerpt = args["excerpt_chars"].as_u64().unwrap_or(200) as usize;
@@ -247,7 +328,7 @@ mod tests {
             &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
         )
         .unwrap();
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 7);
+        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 9);
     }
 }
 
@@ -281,6 +362,51 @@ mod tag_tests {
         assert!(tagged.contains(&a.id));
         let none = call(&cfg, &store, "list_meetings", &json!({"tag": "hr"})).unwrap();
         assert_eq!(none, "[]");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    #[test]
+    fn corrections_are_saved_listed_and_removed() {
+        let root = std::env::temp_dir().join(format!("merkwerk-context-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store { root: root.clone() };
+        let cfg = Config::from_env();
+        let m = store.create("Sync", None).unwrap();
+        let add = |args: Value| call(&cfg, &store, "add_context", &args).unwrap();
+        add(json!({"note": "Kjartur is  Hjoetur"}));
+        add(json!({"note": "Kjartur is Hjoetur"}));
+        add(json!({"note": "them is Anna", "meeting_id": m.id}));
+        assert_eq!(
+            store.context(None),
+            ["Kjartur is Hjoetur"],
+            "whitespace normalized, repeat kept once"
+        );
+        assert!(instructions(&store).contains("- Kjartur is Hjoetur"));
+        let p = store.context_prompt(Some(&m.id));
+        assert!(p.contains("Kjartur is Hjoetur") && p.contains("them is Anna"));
+        assert!(
+            !store.context_prompt(None).contains("Anna"),
+            "meeting notes stay with their meeting"
+        );
+        let got = call(&cfg, &store, "get_meetings", &json!({"meeting_ids": [m.id]})).unwrap();
+        assert!(got.contains("them is Anna"));
+        assert!(
+            call(
+                &cfg,
+                &store,
+                "add_context",
+                &json!({"note": "x", "meeting_id": "../etc"})
+            )
+            .is_err()
+        );
+        call(&cfg, &store, "remove_context", &json!({"note": "Kjartur is Hjoetur"})).unwrap();
+        assert!(store.context(None).is_empty());
+        assert!(call(&cfg, &store, "remove_context", &json!({"note": "nope"})).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

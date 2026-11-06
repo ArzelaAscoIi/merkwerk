@@ -54,10 +54,11 @@ speaking. Never a company, product or glossary term.
 - Fix obvious misrecognitions using the glossary below and context; keep product and customer names exact.
 - Skip small talk and weekend chat. No preamble, no closing summary.
 
-Meeting date: {DATE}{ATTENDEES}{VOCAB}";
+Meeting date: {DATE}{ATTENDEES}{VOCAB}{CONTEXT}";
 
 // Limitation: whole transcript in one request; add map-reduce over chunks if transcripts outgrow the model context.
-pub fn summarize(cfg: &Config, meta: &Meta, transcript: &str) -> Result<String> {
+/// `context`: the user's corrections ([`crate::store::Store::context_prompt`]), empty if none.
+pub fn summarize(cfg: &Config, meta: &Meta, transcript: &str, context: &str) -> Result<String> {
     let vocab = cfg
         .vocab
         .as_ref()
@@ -77,7 +78,8 @@ pub fn summarize(cfg: &Config, meta: &Meta, transcript: &str) -> Result<String> 
             .replace("{ME}", &cfg.me)
             .replace("{DATE}", &date)
             .replace("{ATTENDEES}", &attendees)
-            .replace("{VOCAB}", &vocab),
+            .replace("{VOCAB}", &vocab)
+            .replace("{CONTEXT}", context),
         transcript,
     )?;
     Ok(tidy(&notes))
