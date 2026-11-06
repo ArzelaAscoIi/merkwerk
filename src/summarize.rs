@@ -123,6 +123,35 @@ fn tidy(notes: &str) -> String {
     out.join("\n") + "\n"
 }
 
+/// Where the README explains setting up a notes model (Ollama or LM Studio).
+pub const SETUP_URL: &str = "https://github.com/ArzelaAscoIi/merkwerk#notes-model";
+
+/// The notes server's name for messages: "Ollama", "LM Studio", or its URL.
+pub fn server_name(cfg: &Config) -> String {
+    let url = cfg.llm_url();
+    crate::config::LLM_SERVERS
+        .iter()
+        .find(|(_, u)| *u == url)
+        .map_or(url.clone(), |(label, _)| label.to_string())
+}
+
+/// A failed notes request in words a user can act on, without terminal commands.
+pub fn explain(cfg: &Config, err: &anyhow::Error) -> String {
+    let server = server_name(cfg);
+    let model = cfg.llm_model();
+    match err.chain().find_map(|e| e.downcast_ref::<ureq::Error>()) {
+        Some(ureq::Error::StatusCode(404)) => {
+            format!(
+                "The notes model “{model}” isn't installed in {server}. Pick another one under Notes model in the menu."
+            )
+        }
+        Some(ureq::Error::StatusCode(401 | 403)) => format!("{server} refused the request: check the API key."),
+        Some(ureq::Error::StatusCode(code)) => format!("{server} failed to write with “{model}” (error {code})."),
+        Some(_) => format!("No notes model is running: {server} isn't reachable on this Mac."),
+        None => format!("The notes model gave no usable answer ({err})."),
+    }
+}
+
 /// One system + user turn against the configured OpenAI-compatible endpoint.
 pub fn chat(cfg: &Config, system: &str, user: &str) -> Result<String> {
     chat_messages(
@@ -164,6 +193,18 @@ pub fn title(summary: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_names_the_problem_without_commands() {
+        let cfg = Config::from_env();
+        let down = anyhow::Error::new(ureq::Error::ConnectionFailed).context("calling x");
+        assert!(explain(&cfg, &down).starts_with("No notes model is running"));
+        let missing = anyhow::Error::new(ureq::Error::StatusCode(404));
+        assert!(explain(&cfg, &missing).contains("isn't installed"));
+        for e in [down, missing] {
+            assert!(!explain(&cfg, &e).contains("merkwerk "), "no CLI hints");
+        }
+    }
 
     #[test]
     fn tidy_drops_empty_sections_and_filler_dates() {

@@ -50,6 +50,9 @@ pub static AUTO: AtomicBool = AtomicBool::new(false);
 pub static SCREEN: AtomicBool = AtomicBool::new(false);
 /// A call detected in manual mode, waiting for Record or Ignore.
 pub static PENDING: Mutex<Option<String>> = Mutex::new(None);
+/// Why notes can't be written right now (no server, model missing), in plain words; None when fine
+/// or unknown (a hosted endpoint without a model list).
+static NOTES_PROBLEM: Mutex<Option<String>> = Mutex::new(None);
 /// Models offered by the notes server, refreshed in the background.
 static SERVER_MODELS: Mutex<Vec<String>> = Mutex::new(vec![]);
 /// Chat answers waiting to be handed to the page: (request id, answer HTML).
@@ -222,6 +225,19 @@ define_class!(
                     }
                     return;
                 }
+                // Links in the page open in the browser, never inside the notes window.
+                Some("open_url") => {
+                    if let Some(url) = req["url"].as_str().filter(|u| u.starts_with("https://")) {
+                        let _ = Command::new("open").arg(url).spawn();
+                    }
+                    return;
+                }
+                Some("summarize") => {
+                    if let (Some((cfg, store)), Some(id)) = (STORE.with_borrow(|s| s.clone()), req["target"].as_str()) {
+                        write_notes(cfg, store, id.to_string());
+                    }
+                    return;
+                }
                 Some("accessibility") => {
                     let _ = Command::new("open").arg(ACCESSIBILITY_SETTINGS).spawn();
                     return;
@@ -266,8 +282,14 @@ define_class!(
                     .unwrap_or_default();
                 let target = req["target"].as_str().unwrap_or_default();
                 let question = req["question"].as_str().unwrap_or_default();
-                let answer = crate::ask::answer(&cfg, &store, target, &history, question)
-                    .unwrap_or_else(|e| format!("Could not answer: {e:#}"));
+                let answer = crate::ask::answer(&cfg, &store, target, &history, question).unwrap_or_else(|e| {
+                    eprintln!("ask: {e:#}");
+                    format!(
+                        "{} [How to set up a notes model]({})",
+                        crate::summarize::explain(&cfg, &e),
+                        crate::summarize::SETUP_URL
+                    )
+                });
                 let html = crate::notes::markdown(&answer);
                 ANSWERS
                     .lock()
@@ -320,13 +342,29 @@ fn set_auto(on: bool) {
     }
 }
 
+/// Writes a meeting's notes again in the background (the Write notes button), like after a recording.
+fn write_notes(cfg: Config, store: Store, id: String) {
+    let mut finishing = FINISHING.lock().unwrap();
+    if finishing.contains(&id) || store.load(&id).is_ok_and(|m| store.live(&m)) {
+        return;
+    }
+    finishing.push(id.clone());
+    std::thread::spawn(move || {
+        if let Err(e) = crate::session::finalize(&cfg, &store, &id) {
+            eprintln!("notes for {id}: {e:#}");
+        }
+        FINISHING.lock().unwrap().retain(|f| *f != id);
+    });
+}
+
 fn watch_models(cfg: &Config) {
     let cfg = cfg.clone();
     std::thread::spawn(move || {
         loop {
             // Re-read each time: the menu can switch servers.
-            let names: Option<Vec<String>> = cfg.models_url().and_then(|url| {
-                let mut req = ureq::get(&url);
+            let url = cfg.models_url();
+            let names: Option<Vec<String>> = url.as_ref().and_then(|url| {
+                let mut req = ureq::get(url);
                 if let Some(key) = &cfg.llm_key {
                     req = req.header("Authorization", &format!("Bearer {key}"));
                 }
@@ -339,6 +377,24 @@ fn watch_models(cfg: &Config) {
                             .map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
                     })
             });
+            let server = crate::summarize::server_name(&cfg);
+            let model = cfg.llm_model();
+            // Ollama lists `gemma4` as `gemma4:latest`.
+            let has = |n: &Vec<String>| {
+                n.iter()
+                    .any(|m| *m == model || m.strip_suffix(":latest") == Some(model.as_str()))
+            };
+            *NOTES_PROBLEM.lock().unwrap() = match (&url, &names) {
+                (None, _) => None,
+                (Some(_), None) => Some(format!(
+                    "No notes model is running: {server} isn't reachable on this Mac."
+                )),
+                (Some(_), Some(n)) if n.is_empty() => Some(format!("{server} is running but has no model installed.")),
+                (Some(_), Some(n)) if !has(n) => Some(format!(
+                    "The notes model “{model}” isn't installed in {server}. Pick another one under Notes model in the menu."
+                )),
+                _ => None,
+            };
             // Empty on failure so a previous server's models don't linger.
             let mut names = names.unwrap_or_default();
             names.sort();
@@ -513,6 +569,12 @@ fn entries(store: &Store) -> Vec<Row> {
         rows.push(Row::Open(
             "⚠︎ Screen activity paused: allow Accessibility…".into(),
             ACCESSIBILITY_SETTINGS.into(),
+        ));
+    }
+    if NOTES_PROBLEM.lock().unwrap().is_some() {
+        rows.push(Row::Open(
+            "⚠︎ Notes are off: set up a notes model…".into(),
+            crate::summarize::SETUP_URL.into(),
         ));
     }
     rows.push(Row::Separator);
@@ -734,9 +796,10 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             return;
         }
         let js = format!(
-            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({})",
+            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({}); window.merkwerkNotesServer({})",
             RECORDING.lock().unwrap().is_some(),
-            screen_blocked()
+            screen_blocked(),
+            serde_json::json!(*NOTES_PROBLEM.lock().unwrap())
         );
         unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
         if SHOW_DICTATION.swap(false, Ordering::Relaxed) {
