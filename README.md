@@ -60,7 +60,7 @@ Requirements: macOS 14.6 or newer, Apple Silicon recommended, the
 OpenAI-compatible endpoint works).
 
 ```sh
-cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.2
+cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.3
 merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD (1 MB)
 ollama pull gemma4      # the default notes model
 merkwerk install        # writes ~/Applications/merkwerk.app
