@@ -60,7 +60,7 @@ Requirements: macOS 14.6 or newer, Apple Silicon recommended, the
 OpenAI-compatible endpoint works).
 
 ```sh
-cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.1
+cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.2
 merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD (1 MB)
 ollama pull gemma4      # the default notes model
 merkwerk install        # writes ~/Applications/merkwerk.app
@@ -91,6 +91,22 @@ the first time ("merkwerk local signing"; macOS may ask once for your keychain p
 the signature stays the same, these permissions survive reinstalls. If the menu or the notes
 window says screen activity is paused, Accessibility is missing: the warning opens the right
 Settings page.
+
+## Notes model
+
+Recording and transcription work on their own. Meeting notes, the chat and the daily work log also
+need a local model. Without one, merkwerk says "Notes are off" and keeps every transcript; once a
+model runs, click **Write notes** on any meeting that has none.
+
+- **Ollama** (default): install the app from [ollama.com/download](https://ollama.com/download), open
+  it, pick `gemma4` in its model list and send one message so it downloads (or run
+  `ollama pull gemma4`).
+- **LM Studio**: install it from [lmstudio.ai](https://lmstudio.ai), download a model under
+  **Discover**, then turn on the local server under **Developer**. Choose **LM Studio** under
+  **Notes server** in the merkwerk menu.
+
+merkwerk checks for the model every 10 seconds; the warning disappears on its own. Pick a different
+model under **Notes model** in the menu.
 
 ## Using it
 

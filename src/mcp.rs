@@ -233,6 +233,9 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
                         "Saved; this meeting has no transcript to rewrite."
                     );
                     crate::session::finalize(cfg, store, id)?;
+                    if let Some(why) = store.read(id, crate::session::NOTES_ERROR) {
+                        bail!("Saved, but the notes weren't rewritten: {why}");
+                    }
                     format!(
                         "Saved for {id}; notes rewritten:\n\n{}",
                         store.read(id, "summary.md").unwrap_or_default()

@@ -210,6 +210,9 @@ fn cut(samples: &[f32]) -> usize {
 
 /// Write transcript.md and summary.md. Untitled meetings take the calendar event's title, else
 /// the summary's; the event's invitees are kept in meta.json and given to the notes step.
+/// Why a meeting has no notes, in plain words, when writing them failed.
+pub const NOTES_ERROR: &str = "notes_error.txt";
+
 pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     // Nothing was said (a misclick, or a call that never got going): don't keep it.
     if store.transcript(id).trim().is_empty() {
@@ -235,7 +238,17 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     // Rendered after the calendar lookup: a 1:1's invitee names the `them` lines.
     let transcript = store.transcript(id);
     store.write(id, "transcript.md", &transcript)?;
-    let summary = summarize::summarize(cfg, &meta, &transcript, &store.context_prompt(Some(id)))?;
+    // Without a notes model the recording and transcript stay; the notes window says why and
+    // offers to write the notes later.
+    let summary = match summarize::summarize(cfg, &meta, &transcript, &store.context_prompt(Some(id))) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{id}: no notes: {e:#}");
+            store.write(id, NOTES_ERROR, &summarize::explain(cfg, &e))?;
+            return Ok(());
+        }
+    };
+    let _ = std::fs::remove_file(store.dir(id).join(NOTES_ERROR));
     store.write(id, "summary.md", &summary)?;
     // Reload: the title or tags may have been edited in the notes window while summarizing.
     let mut meta = store.load(id)?;

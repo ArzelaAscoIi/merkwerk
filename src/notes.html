@@ -90,6 +90,12 @@
   #blocked button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--on-accent); background: var(--rec);
     border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
   #blocked[hidden] { display: none; }
+  #notes-off { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+    background: color-mix(in srgb, #d08a1c 12%, var(--bg)); border: 1px solid color-mix(in srgb, #d08a1c 35%, transparent); }
+  #notes-off button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: default; }
+  #notes-off[hidden] { display: none; }
+  .empty .actions { display: flex; gap: 10px; margin-top: 12px; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   input[type=search] {
     width: 100%; font: inherit; color: var(--text);
@@ -234,6 +240,7 @@
   <button id="rec" type="button" hidden>Start recording</button>
   <div class="seg tabs" id="tabs"><button type="button" data-tab="meetings">Meetings</button><button type="button" data-tab="activity">Activity</button><button type="button" data-tab="dictation">Dictation</button></div>
   <div id="dict-new" hidden>New: hold a key to dictate into any app, transcribed on this Mac.<button type="button">Set up dictation</button></div>
+  <div id="notes-off" hidden><span></span> Recordings and transcripts still work.<button type="button">Set up notes</button></div>
   <div id="blocked" hidden>Screen activity is paused: macOS hasn't allowed merkwerk Accessibility access.<button type="button">Open Settings</button></div>
   <div class="search">
     <label class="sr" for="q">Search meetings</label>
@@ -691,9 +698,21 @@ function emptyNotes(m) {
   if (m.live) e.textContent = "Notes are written when the meeting ends. The transcript fills in while it runs.";
   else if (m.writing) { e.classList.add("writing"); e.append(el("span", "spinner"), "Writing notes…"); }
   else if (m.today) e.textContent = "Today's work log is written after midnight. Activity shows what was recorded so far.";
-  else if (m.kind === "log") e.textContent = "No work log yet.";
+  else if (m.kind === "log") e.textContent = notesProblem ? `No work log yet. ${notesProblem}` : "No work log yet.";
   else if (!m.lines.length) e.textContent = "Nothing was said in this recording.";
-  else e.innerHTML = `No notes yet. Run <code>merkwerk summarize ${m.id}</code> to write them.`;
+  else {
+    e.append(m.notes_error ? `Notes weren't written. ${m.notes_error} The transcript is saved.` : "No notes yet.");
+    const actions = el("div", "actions");
+    const write = el("button", "act", "Write notes");
+    write.onclick = () => { post({ action: "summarize", target: m.id }); m.writing = true; renderView(false); };
+    actions.append(write);
+    if (m.notes_error || notesProblem) {
+      const help = el("button", "copy", "How to set up a notes model");
+      help.onclick = () => openUrl(SETUP_URL);
+      actions.append(help);
+    }
+    e.append(actions);
+  }
   return e;
 }
 
@@ -795,6 +814,27 @@ const rec = document.getElementById("rec");
 rec.hidden = !window.webkit?.messageHandlers?.merkwerk;
 rec.onclick = () => {
   window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: rec.classList.contains("on") ? "stop" : "start" }));
+};
+// Where the README explains setting up a notes model; same as summarize::SETUP_URL.
+const SETUP_URL = "https://github.com/ArzelaAscoIi/merkwerk#notes-model";
+const openUrl = url => post({ action: "open_url", url });
+// Links (in notes, chat answers) open in the browser, not inside this window.
+document.addEventListener("click", e => {
+  const a = e.target.closest?.("a[href^='http']");
+  if (!a) return;
+  e.preventDefault();
+  openUrl(a.href);
+});
+// Called by the app every second: why notes can't be written now, or null.
+let notesProblem = null;
+const notesOff = document.getElementById("notes-off");
+notesOff.querySelector("button").onclick = () => openUrl(SETUP_URL);
+window.merkwerkNotesServer = problem => {
+  const changed = problem !== notesProblem;
+  notesProblem = problem;
+  notesOff.hidden = !problem;
+  notesOff.querySelector("span").textContent = problem ? `Notes are off. ${problem}` : "";
+  if (changed && !rendering && tab !== "dictation") renderView(false);
 };
 // Called by the app every second: screen activity is on but lacks the Accessibility permission.
 const blocked = document.getElementById("blocked");
