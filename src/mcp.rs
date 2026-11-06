@@ -131,7 +131,7 @@ fn tools() -> Value {
         },
         {
             "name": "add_context",
-            "description": "Save a correction or background note so merkwerk gets it right from now on: a misheard name ('Kjartur is Hjoetur'), who a speaker is ('them in this meeting is Anna from Acme'), who someone is ('Robin leads the Agents team') or context a summary missed. Without meeting_id it applies to all meetings and work logs; with it, to that meeting only. Used by every later summary, answer and MCP session. Set rewrite_notes to rewrite that meeting's notes with it now (takes a minute).",
+            "description": "Save a correction or background note so merkwerk gets it right from now on: a misheard name ('Jon is Jonne'), who a speaker is ('them in this meeting is Anna from Acme'), who someone is ('Mia runs sales at Acme') or context a summary missed. Without meeting_id it applies to all meetings and work logs; with it, to that meeting only. Used by every later summary, answer and MCP session. Set rewrite_notes to rewrite that meeting's notes with it now (takes a minute).",
             "inputSchema": {"type": "object", "required": ["note"], "properties": {
                 "note": {"type": "string", "description": "One plain sentence, written as a fact."},
                 "meeting_id": {"type": "string", "description": "Only for this meeting (default: all)."},
@@ -378,17 +378,17 @@ mod context_tests {
         let cfg = Config::from_env();
         let m = store.create("Sync", None).unwrap();
         let add = |args: Value| call(&cfg, &store, "add_context", &args).unwrap();
-        add(json!({"note": "Kjartur is  Hjoetur"}));
-        add(json!({"note": "Kjartur is Hjoetur"}));
+        add(json!({"note": "Jon is  Jonne"}));
+        add(json!({"note": "Jon is Jonne"}));
         add(json!({"note": "them is Anna", "meeting_id": m.id}));
         assert_eq!(
             store.context(None),
-            ["Kjartur is Hjoetur"],
+            ["Jon is Jonne"],
             "whitespace normalized, repeat kept once"
         );
-        assert!(instructions(&store).contains("- Kjartur is Hjoetur"));
+        assert!(instructions(&store).contains("- Jon is Jonne"));
         let p = store.context_prompt(Some(&m.id));
-        assert!(p.contains("Kjartur is Hjoetur") && p.contains("them is Anna"));
+        assert!(p.contains("Jon is Jonne") && p.contains("them is Anna"));
         assert!(
             !store.context_prompt(None).contains("Anna"),
             "meeting notes stay with their meeting"
@@ -404,7 +404,7 @@ mod context_tests {
             )
             .is_err()
         );
-        call(&cfg, &store, "remove_context", &json!({"note": "Kjartur is Hjoetur"})).unwrap();
+        call(&cfg, &store, "remove_context", &json!({"note": "Jon is Jonne"})).unwrap();
         assert!(store.context(None).is_empty());
         assert!(call(&cfg, &store, "remove_context", &json!({"note": "nope"})).is_err());
         std::fs::remove_dir_all(root).unwrap();

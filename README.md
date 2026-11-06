@@ -195,7 +195,7 @@ claude mcp add merkwerk -- merkwerk mcp
 | `get_activity` | a day's window sessions with text excerpts |
 | `get_work_log` | the day's work log (written on first request) |
 | `search_activity` | everything you had on screen, by keyword |
-| `add_context` | saves a correction ("Kjartur is Hjoetur", "them in this call is Anna"): for all meetings or one; optionally rewrites that meeting's notes now |
+| `add_context` | saves a correction ("Jon is Jonne", "them in this call is Anna"): for all meetings or one; optionally rewrites that meeting's notes now |
 | `remove_context` | deletes a saved correction |
 
 Tell your agent what merkwerk got wrong and it saves it with `add_context`. Corrections go into every
