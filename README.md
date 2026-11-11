@@ -234,6 +234,9 @@ live as plain lists in `~/merkwerk/context.md` (all meetings) and `context.md` i
   loopback for system audio.
 - **Echo** from your speakers reaching the mic is dropped from `me` when its words match `them`
   speech at the same time; the raw segments stay in `transcript.jsonl`.
+- **Muted in the call**: Meet, Teams web and Slack keep the microphone open while you are muted.
+  During a call recording merkwerk reads the call app's mute button through Accessibility once a
+  second; while it says muted (`Turn on microphone`, `Unmute…`), `me` is recorded as silence.
 - **Calendar**: after a meeting, the overlapping calendar event with other invitees (EventKit)
   supplies the title and the invited names, so notes can name owners. With exactly one other
   invitee, the `them` lines carry that person's first name. Any calendar macOS Calendar syncs
@@ -308,6 +311,8 @@ override both, but only reach the app if set with `launchctl setenv`.
   microphone right away.
 - Apps that draw their content as pixels (some terminals, remote desktops, games) only show their
   window title in the activity log.
+- Mute detection reads English button labels and only sees the active tab of each Chrome window;
+  the Teams desktop app is not detected. If the state can't be read, `me` is recorded normally.
 
 ## Contributing
 
