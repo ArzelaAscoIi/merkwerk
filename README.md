@@ -312,7 +312,8 @@ override both, but only reach the app if set with `launchctl setenv`.
 - Apps that draw their content as pixels (some terminals, remote desktops, games) only show their
   window title in the activity log.
 - Mute detection reads English button labels and only sees the active tab of each Chrome window;
-  the Teams desktop app is not detected. If the state can't be read, `me` is recorded normally.
+  the Teams desktop app is not detected and Slack's huddle label is untested. If the state can't
+  be read, `me` is recorded normally.
 
 ## Contributing
 
