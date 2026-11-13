@@ -211,9 +211,9 @@ fn ensure_model(path: &Path, url: &str) -> Result<()> {
     Ok(())
 }
 
-/// Whether an engine's model files are already downloaded.
+/// Whether an engine's model files and the shared VAD model are already downloaded.
 pub fn installed(cfg: &Config, engine: &str) -> bool {
-    model_files(cfg, engine).iter().all(|(p, _)| p.exists())
+    cfg.vad.exists() && model_files(cfg, engine).iter().all(|(p, _)| p.exists())
 }
 
 #[cfg(test)]
