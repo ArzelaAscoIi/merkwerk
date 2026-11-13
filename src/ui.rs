@@ -60,6 +60,39 @@ static ANSWERS: Mutex<Vec<(u64, String)>> = Mutex::new(vec![]);
 /// Speech engine whose model is being downloaded.
 static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
 
+/// Download the selected engine's missing model files in the background, one download at a time;
+/// the menu shows "(downloading...)" meanwhile.
+pub fn download_models(cfg: Config) {
+    let engine = cfg.engine();
+    {
+        let mut downloading = DOWNLOADING.lock().unwrap();
+        if downloading.is_some() {
+            return;
+        }
+        *downloading = Some(engine);
+    }
+    std::thread::spawn(move || {
+        // Loop: the engine may be switched mid-download; a pick that found DOWNLOADING set relies
+        // on this thread. The installed check and clearing share the lock so no pick slips between.
+        loop {
+            {
+                let mut downloading = DOWNLOADING.lock().unwrap();
+                let engine = cfg.engine();
+                if crate::transcribe::installed(&cfg, &engine) {
+                    *downloading = None;
+                    return;
+                }
+                *downloading = Some(engine);
+            }
+            if let Err(e) = crate::transcribe::ensure_models(&cfg) {
+                eprintln!("model download: {e:#}");
+                *DOWNLOADING.lock().unwrap() = None;
+                return;
+            }
+        }
+    });
+}
+
 /// Speech engines offered in the menu: id and label.
 const ENGINES: [(&str, &str); 3] = [
     ("parakeet", "Parakeet v3 (25 languages, fastest)"),
@@ -122,14 +155,8 @@ define_class!(
                 Some(Pick::Engine(engine)) => {
                     let _ = crate::config::set_setting(&cfg.root, "engine", engine.clone().into());
                     if !crate::transcribe::installed(&cfg, &engine) {
-                        // Download in the background; the next recording uses the new engine.
-                        *DOWNLOADING.lock().unwrap() = Some(engine);
-                        std::thread::spawn(move || {
-                            if let Err(e) = crate::transcribe::ensure_models(&cfg) {
-                                eprintln!("model download: {e:#}");
-                            }
-                            *DOWNLOADING.lock().unwrap() = None;
-                        });
+                        // The next recording uses the new engine.
+                        download_models(cfg);
                     }
                 }
                 Some(Pick::Llm(model)) => {

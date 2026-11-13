@@ -36,24 +36,33 @@ type Chunk = (Source, f64, Vec<f32>);
 /// A finished capture whose transcription may still be catching up.
 pub struct Recording {
     pub meta: Meta,
-    worker: JoinHandle<()>,
+    /// true once every chunk went through the speech model; false if it could not be loaded.
+    worker: JoinHandle<bool>,
 }
 
 impl Recording {
     /// Wait for the last chunks to be transcribed, then write transcript.md and summary.md.
     pub fn finish(self, cfg: &Config, store: &Store) -> Result<()> {
-        let _ = self.worker.join();
+        let id = &self.meta.id;
+        // A panicked worker counts as untranscribed: redo the whole meeting from the wav files.
+        if !self.worker.join().unwrap_or(false) {
+            // finalize would delete the meeting for its empty transcript, so stop here if this fails too.
+            retranscribe(cfg, store, id).with_context(|| {
+                format!("{id}: audio kept, not transcribed; run `merkwerk model`, then `merkwerk transcribe {id}` and `merkwerk summarize {id}`")
+            })?;
+        }
         // The speech model (several hundred MB) was just dropped; hand the freed pages back to
         // macOS instead of letting the allocator keep them for the rest of the day.
         unsafe extern "C" {
             fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
         }
         unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) }; // all zones, as much as possible
-        finalize(cfg, store, &self.meta.id)
+        finalize(cfg, store, id)
     }
 }
 
-/// Record until `should_stop` (polled every 2s) returns true.
+/// Record until `should_stop` (polled every 2s) returns true. The speech model loads on the
+/// transcription thread, so the audio is saved even without it.
 pub fn record(
     cfg: &Config,
     store: &Store,
@@ -61,7 +70,6 @@ pub fn record(
     app: Option<String>,
     mut should_stop: impl FnMut() -> bool,
 ) -> Result<Recording> {
-    let mut transcriber = Transcriber::load(cfg)?;
     let (tx, rx) = mpsc::channel();
     let mut capture = audio::start(tx)?;
     let meta = store.create(title, app)?;
@@ -69,8 +77,17 @@ pub fn record(
 
     let (chunk_tx, chunk_rx) = mpsc::channel::<Chunk>();
     let worker = {
-        let (store, id) = (store.clone(), meta.id.clone());
+        let (cfg, store, id) = (cfg.clone(), store.clone(), meta.id.clone());
         thread::spawn(move || {
+            // Loaded here, not before capture: a missing model loses the live transcript, never the audio.
+            let mut transcriber = match Transcriber::load(&cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("transcribe: {e:#}");
+                    crate::ui::download_models(cfg);
+                    return false;
+                }
+            };
             for (source, offset, samples) in chunk_rx {
                 let res = transcriber
                     .run(source, offset, &samples)
@@ -79,6 +96,7 @@ pub fn record(
                     eprintln!("transcribe: {e:#}");
                 }
             }
+            true
         })
     };
 
@@ -342,5 +360,30 @@ mod tests {
             "cut at {n}, pause at {pause}"
         );
         assert!(n <= CHUNK);
+    }
+
+    #[test]
+    fn finish_keeps_the_meeting_when_the_model_is_missing() {
+        let root = std::env::temp_dir().join(format!("merkwerk-test-nomodel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let missing = root.join("models/missing");
+        let cfg = Config {
+            root: root.clone(),
+            parakeet: missing.clone(),
+            model: missing.clone(),
+            model_v2: missing.clone(),
+            vad: missing,
+            ..Config::from_env()
+        };
+        let store = Store { root: root.clone() };
+        let meta = store.create("t", None).unwrap();
+        let dir = store.dir(&meta.id);
+        let rec = Recording {
+            meta,
+            worker: thread::spawn(|| false),
+        };
+        assert!(rec.finish(&cfg, &store).is_err());
+        assert!(dir.exists(), "finalize deleted the untranscribed recording");
+        let _ = fs::remove_dir_all(root);
     }
 }

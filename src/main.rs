@@ -179,6 +179,8 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
                 Ok(rec) => rec,
                 Err(e) => {
                     eprintln!("recording failed: {e:#}");
+                    // Without the pause a call that can't be recorded is retried many times a second.
+                    thread::sleep(Duration::from_secs(2));
                     continue;
                 }
             };
