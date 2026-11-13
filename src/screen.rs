@@ -113,7 +113,7 @@ impl Walk {
             return;
         }
         self.nodes += 1;
-        let Some([role, value, title, kids]) = self.fetch(el) else {
+        let Some([role, value, title, kids]) = fetch::<4>(el, &self.attrs) else {
             return;
         };
         let as_string = |v: Option<CFRetained<CFType>>| v?.downcast::<CFString>().ok().map(|s| s.to_string());
@@ -147,26 +147,6 @@ impl Walk {
         }
     }
 
-    /// WALK_ATTRS of one element; attributes it lacks come back as None.
-    fn fetch(&self, el: &AXUIElement) -> Option<[Option<CFRetained<CFType>>; 4]> {
-        let mut out: *const CFArray = std::ptr::null();
-        let err = unsafe {
-            el.copy_multiple_attribute_values(
-                self.attrs.as_ref(),
-                AXCopyMultipleAttributeOptions::empty(),
-                NonNull::from(&mut out),
-            )
-        };
-        let out = unsafe { CFRetained::from_raw(NonNull::new(out.cast_mut())?) };
-        if err != AXError::Success {
-            return None;
-        }
-        // One CFType per requested attribute; a missing one is an AXValue error marker, which
-        // the CFString / CFArray downcasts in `visit` reject.
-        let values = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(out) };
-        Some([values.get(0), values.get(1), values.get(2), values.get(3)])
-    }
-
     fn push(&mut self, t: &str) {
         let t = t.trim();
         if t.is_empty() {
@@ -177,6 +157,93 @@ impl Walk {
         }
         self.text.push_str(t);
     }
+}
+
+/// Fetch attributes in one cross-process call; missing attributes come back as None.
+fn fetch<const N: usize>(el: &AXUIElement, attrs: &CFArray<CFString>) -> Option<[Option<CFRetained<CFType>>; N]> {
+    let mut out: *const CFArray = std::ptr::null();
+    let err = unsafe {
+        el.copy_multiple_attribute_values(
+            attrs.as_ref(),
+            AXCopyMultipleAttributeOptions::empty(),
+            NonNull::from(&mut out),
+        )
+    };
+    let out = unsafe { CFRetained::from_raw(NonNull::new(out.cast_mut())?) };
+    if err != AXError::Success {
+        return None;
+    }
+    // Missing attributes are AXValue error markers, rejected by the callers' downcasts.
+    let values = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(out) };
+    Some(std::array::from_fn(|i| values.get(i)))
+}
+
+fn is_muted_label(s: &str) -> bool {
+    let s = s.trim().to_lowercase();
+    s.starts_with("turn on microphone") || s.starts_with("unmute")
+}
+
+/// Best-effort in-call mute state; unknown state never suppresses audio.
+pub fn mic_muted(pid: i32) -> bool {
+    let ax = unsafe { AXUIElement::new_application(pid) };
+    if unsafe { ax.set_messaging_timeout(0.5) } != AXError::Success {
+        return false;
+    }
+    // Chromium and Electron need this even if the app has never been frontmost.
+    let _ = unsafe {
+        ax.set_attribute_value(
+            &CFString::from_static_str("AXManualAccessibility"),
+            CFBoolean::new(true),
+        )
+    };
+    let Some(windows) = attr(&ax, "AXWindows").and_then(|a| a.downcast::<CFArray>().ok()) else {
+        return false;
+    };
+    // AXWindows is documented as an array of AXUIElements.
+    let windows = unsafe { CFRetained::cast_unchecked::<CFArray<AXUIElement>>(windows) };
+    let attrs = CFArray::from_retained_objects(
+        &["AXRole", "AXValue", "AXTitle", "AXDescription", "AXChildren"].map(CFString::from_static_str),
+    );
+    // None on any failed AX call: unknown state must never mute.
+    fn visit(el: &AXUIElement, attrs: &CFArray<CFString>, nodes: &mut usize, depth: usize) -> Option<bool> {
+        if depth > 60 || *nodes >= MAX_NODES {
+            return Some(false);
+        }
+        *nodes += 1;
+        let [role, value, title, description, kids] = fetch::<5>(el, attrs)?;
+        let role = role.and_then(|r| r.downcast::<CFString>().ok()).map(|r| r.to_string());
+        // ponytail: English labels only; add locales when a real call needs them.
+        let labelled_muted = || {
+            [&description, &title, &value].into_iter().flatten().any(|v| {
+                v.downcast_ref::<CFString>()
+                    .is_some_and(|s| is_muted_label(&s.to_string()))
+            })
+        };
+        match role.as_deref() {
+            Some("AXMenuBar" | "AXMenu") => return Some(false),
+            Some("AXButton" | "AXCheckBox" | "AXStaticText" | "AXMenuButton") if labelled_muted() => return Some(true),
+            _ => {}
+        }
+        let Some(kids) = kids.and_then(|k| k.downcast::<CFArray>().ok()) else {
+            return Some(false);
+        };
+        // AXChildren is documented as an array of AXUIElements.
+        let kids = unsafe { CFRetained::cast_unchecked::<CFArray<AXUIElement>>(kids) };
+        for child in kids.iter() {
+            if visit(&child, attrs, nodes, depth + 1)? {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+    let mut nodes = 0;
+    for window in windows.iter() {
+        match visit(&window, &attrs, &mut nodes, 0) {
+            Some(false) => {}
+            found => return found == Some(true),
+        }
+    }
+    false
 }
 
 fn is_page(url: &str) -> bool {
@@ -234,6 +301,15 @@ fn redact(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muted_labels() {
+        assert!(is_muted_label("Turn on microphone (⌘ + d)"));
+        assert!(is_muted_label("Unmute mic"));
+        assert!(!is_muted_label("Turn off microphone (⌘ + d)"));
+        assert!(!is_muted_label("Mute mic"));
+        assert!(!is_muted_label("You can't unmute someone else"));
+    }
 
     #[test]
     fn redacts_tokens_keeps_words() {
@@ -296,6 +372,15 @@ mod live {
 #[cfg(test)]
 mod debug {
     use super::*;
+
+    #[test]
+    #[ignore = "reads the real screen"]
+    fn mute_state() {
+        let pid: i32 = std::env::var("PID").unwrap().parse().unwrap();
+        let start = std::time::Instant::now();
+        eprintln!("muted={} elapsed={:?}", mic_muted(pid), start.elapsed());
+    }
+
     #[test]
     #[ignore = "reads the real screen"]
     fn roles() {
