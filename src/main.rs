@@ -4,6 +4,7 @@ mod audio;
 mod calendar;
 mod config;
 mod detect;
+mod dictate;
 mod mcp;
 mod notes;
 mod screen;
@@ -44,7 +45,7 @@ const USAGE: &str = "merkwerk: local meeting recorder
 
 env: MERKWERK_DIR MERKWERK_MODEL MERKWERK_LANG MERKWERK_LLM_URL
      MERKWERK_LLM_MODEL MERKWERK_LLM_KEY MERKWERK_IGNORE MERKWERK_ME
-     MERKWERK_SCREEN MERKWERK_SCREEN_IGNORE";
+     MERKWERK_SCREEN MERKWERK_SCREEN_IGNORE MERKWERK_DICTATE";
 
 /// A call is over once nobody else has used the mic for this long.
 const CALL_IDLE: Duration = Duration::from_secs(15);
@@ -52,6 +53,7 @@ const CALL_IDLE: Duration = Duration::from_secs(15);
 fn main() -> Result<()> {
     let cfg = Config::from_env();
     let store = Store { root: cfg.root.clone() };
+    *dictate::SHORTCUT.lock().unwrap() = dictate::configured(&cfg);
     // Finder may pass a process serial number (-psn_...) to apps it launches.
     let args: Vec<String> = env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
@@ -113,6 +115,8 @@ fn watch(cfg: &Config, store: &Store) -> Result<()> {
     ui::SCREEN.store(cfg.screen_enabled(), Ordering::Relaxed);
     let (c, s) = (cfg.clone(), store.clone());
     thread::spawn(move || activity::run(&c, &s));
+    let c = cfg.clone();
+    thread::spawn(move || dictate::run(c));
     let (c, s) = (cfg.clone(), store.clone());
     thread::spawn(move || {
         if let Err(e) = watch_loop(&c, &s) {

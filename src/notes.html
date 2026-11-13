@@ -17,6 +17,8 @@
     --select: #e2e7e4;
     --accent: #0f7a5c;
     --rec: #c8372d;
+    /* text on accent and rec buttons */
+    --on-accent: #fff;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   }
@@ -32,6 +34,8 @@
       --select: #1f2a25;
       --accent: #3cc497;
       --rec: #ef6b5f;
+      /* the dark-mode accent and rec are light: white text on them is unreadable */
+      --on-accent: #0b1a15;
     }
   }
   * { box-sizing: border-box; }
@@ -52,16 +56,46 @@
   .search { padding: 18px 14px 10px; }
   #rec {
     display: block; width: calc(100% - 28px); margin: 18px 14px 0; font: inherit; font-weight: 500;
-    color: #fff; background: var(--accent); border: 0; border-radius: 8px; padding: 7px 10px; cursor: default;
+    color: var(--on-accent); background: var(--accent); border: 0; border-radius: 8px; padding: 7px 10px; cursor: default;
   }
   #rec.on { background: var(--rec); }
   #rec[hidden] { display: none; }
-  .tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 12px 14px 0; }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; margin: 12px 14px 0; }
+  #dict-new { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  #dict-new button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--on-accent); background: var(--accent);
+    border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
+  #dict-new[hidden] { display: none; }
+  .steps { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 22px; }
+  .steps h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+  .steps .n { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+  .steps p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+  .ok { color: var(--accent); font-weight: 500; }
+  .keyrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .combo { display: inline-flex; gap: 4px; }
+  .combo kbd { font: 15px var(--sans); color: var(--text); padding: 3px 9px; border-radius: 6px; border-bottom-width: 2px; }
+  .capturing { color: var(--accent); font-weight: 500; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .err { color: var(--rec) !important; }
+  .act { font: inherit; font-weight: 500; color: var(--on-accent); background: var(--accent); border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
+  #try { width: 100%; min-height: 72px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; outline: none; resize: vertical; }
+  #try:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .history { margin-top: 40px; }
+  .history h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  .said { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .said .ts { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; }
   #blocked { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px; color: var(--text);
     background: color-mix(in srgb, var(--rec) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--rec) 35%, transparent); }
-  #blocked button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: #fff; background: var(--rec);
+  #blocked button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--on-accent); background: var(--rec);
     border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
   #blocked[hidden] { display: none; }
+  #notes-off { margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+    background: color-mix(in srgb, #d08a1c 12%, var(--bg)); border: 1px solid color-mix(in srgb, #d08a1c 35%, transparent); }
+  #notes-off button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: default; }
+  #notes-off[hidden] { display: none; }
+  .empty .actions { display: flex; gap: 10px; margin-top: 12px; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   input[type=search] {
     width: 100%; font: inherit; color: var(--text);
@@ -190,7 +224,7 @@
   }
   .ask textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
   .ask button {
-    font: inherit; font-size: 14px; color: #fff; background: var(--accent); border: 0;
+    font: inherit; font-size: 14px; color: var(--on-accent); background: var(--accent); border: 0;
     border-radius: 8px; padding: 0 16px; cursor: default;
   }
   .ask button:disabled { opacity: 0.5; }
@@ -210,7 +244,9 @@
 <body>
 <aside>
   <button id="rec" type="button" hidden>Start recording</button>
-  <div class="seg tabs" id="tabs"><button type="button" data-tab="meetings">Meetings</button><button type="button" data-tab="activity">Activity</button></div>
+  <div class="seg tabs" id="tabs"><button type="button" data-tab="meetings">Meetings</button><button type="button" data-tab="activity">Activity</button><button type="button" data-tab="dictation">Dictation</button></div>
+  <div id="dict-new" hidden>New: hold a key to dictate into any app, transcribed on this Mac.<button type="button">Set up dictation</button></div>
+  <div id="notes-off" hidden><span></span> Recordings and transcripts still work.<button type="button">Set up notes</button></div>
   <div id="blocked" hidden>Screen activity is paused: macOS hasn't allowed merkwerk Accessibility access.<button type="button">Open Settings</button></div>
   <div class="search">
     <label class="sr" for="q">Search meetings</label>
@@ -221,6 +257,7 @@
 <main><div class="wrap" id="view"></div></main>
 
 <script id="data" type="application/json">/*DATA*/</script>
+<script id="dictation" type="application/json">/*DICTATION*/</script>
 <script>
 let meetings = JSON.parse(document.getElementById("data").textContent);
 const list = document.getElementById("list");
@@ -255,13 +292,14 @@ const el = (tag, cls, text) => {
 };
 
 function visible() {
+  if (tab === "dictation") return [];
   const term = q.value.trim().toLowerCase();
   return meetings.filter(m => (m.kind === "log") === (tab === "activity") && (!term || m.search.includes(term)));
 }
 
 function renderTabs() {
   for (const b of tabs.children) b.setAttribute("aria-pressed", b.dataset.tab === tab);
-  q.placeholder = tab === "activity" ? "Search activity" : "Search meetings";
+  q.placeholder = { activity: "Search activity", dictation: "Search dictations" }[tab] ?? "Search meetings";
 }
 for (const b of tabs.children) b.onclick = () => switchTab(b.dataset.tab);
 
@@ -269,6 +307,7 @@ function switchTab(to) {
   if (to === tab) return;
   tab = to;
   mode = "notes";
+  if (to === "dictation") dictNew.hidden = true;
   renderTabs();
   const first = visible()[0];
   current = first?.id;
@@ -278,6 +317,11 @@ function switchTab(to) {
 function renderList() {
   list.replaceChildren();
   const items = visible();
+  if (tab === "dictation") {
+    const k = keyLabel();
+    list.append(el("div", "none", k ? `Hold ${k} in any app, speak, let go.` : "Record a dictation shortcut to start."));
+    return;
+  }
   if (!items.length) {
     const none = tab === "activity"
       ? (q.value.trim() ? "No activity matches." : "No screen activity yet. Turn it on in the menu bar.")
@@ -321,6 +365,7 @@ function renderView(animate = true) {
   rendering = true; // removing a focused input may fire blur; that is not the user leaving it
   view.replaceChildren();
   rendering = false;
+  if (tab === "dictation") { renderDictation(); return; }
   const m = meetings.find(x => x.id === current);
   if (!m) {
     const e = el("div", "empty");
@@ -546,21 +591,140 @@ function markNextSteps(n) {
   }
 }
 
+// Dictation tab state from the app (window.merkwerkDictation): shortcut ("⌃ ⌥", "" = off),
+// capturing, error, trusted, chosen, history.
+let dictation = null;
+// What is typed in the "Try it" box; survives re-renders when a dictation lands in it.
+let tryDraft = "";
+let tryFocused = false;
+try { dictation = JSON.parse(document.getElementById("dictation").textContent); } catch { /* opened outside the app */ }
+const post = msg => window.webkit?.messageHandlers?.merkwerk?.postMessage(JSON.stringify(msg));
+const keyLabel = () => dictation?.shortcut || null;
+
+function renderDictation() {
+  rendering = true;
+  view.replaceChildren();
+  rendering = false;
+  view.append(el("h1", "title", "Dictation"));
+  view.append(el("span", "meta", "Hold a key in any app, speak, let go: the words are typed where your cursor is. " +
+    "Everything is transcribed on this Mac with the speech model chosen in the menu."));
+  if (!dictation) return;
+  const steps = el("ol", "steps");
+  const step = (n, title, ...body) => {
+    const li = el("li");
+    const h = el("h2");
+    h.append(el("span", "n", n), title);
+    li.append(h, ...body);
+    steps.append(li);
+  };
+
+  const keyRow = el("div", "keyrow");
+  if (dictation.capturing) {
+    keyRow.append(el("span", "capturing", "Press your keys, then let go…"));
+    const cancel = el("button", "copy", "Cancel");
+    cancel.onclick = () => { post({ action: "cancel_shortcut" }); dictation.capturing = false; renderDictation(); };
+    keyRow.append(cancel);
+  } else {
+    if (dictation.shortcut) {
+      const kb = el("span", "combo");
+      for (const k of dictation.shortcut.split(" ")) kb.append(el("kbd", null, k));
+      keyRow.append(kb);
+    }
+    const rec = el("button", "act", dictation.shortcut ? "Change" : "Record shortcut");
+    rec.onclick = () => { post({ action: "record_shortcut" }); dictation.capturing = true; dictation.error = null; renderDictation(); };
+    keyRow.append(rec);
+    if (dictation.shortcut) {
+      const off = el("button", "copy", "Turn off");
+      off.onclick = () => { post({ action: "clear_shortcut" }); dictation.shortcut = ""; renderDictation(); renderList(); };
+      keyRow.append(off);
+    }
+  }
+  const keyHelp = dictation.error
+    ? el("p", "err", dictation.error)
+    : el("p", null, "Use modifier keys: fn, ⌃, ⌥, ⇧, ⌘, alone or together (e.g. ⌃ ⌥ or Right ⌘). " +
+        "Pressing another key while holding cancels, so shortcuts keep working. " +
+        "With fn, set System Settings → Keyboard → “Press 🌐 key to” to “Do Nothing”.");
+  step("1", "Record the shortcut you hold to talk", keyRow, keyHelp);
+
+  if (dictation.trusted) {
+    step("2", "Allow pasting", el("span", "ok", "✓ merkwerk may paste into other apps."));
+  } else {
+    const b = el("button", "act", "Open Accessibility settings");
+    b.onclick = () => post({ action: "accessibility" });
+    step("2", "Allow pasting", b, el("p", null, "Turn on merkwerk in the list. Until then the words show on screen and in the history below, but aren't typed."));
+  }
+
+  const k = keyLabel();
+  const t = el("textarea");
+  t.id = "try";
+  t.value = tryDraft;
+  t.placeholder = k ? `Click here, hold ${k}, say a sentence, let go.` : "Record a shortcut first.";
+  t.oninput = () => { tryDraft = t.value; };
+  t.onfocus = () => { tryFocused = true; };
+  t.onblur = () => { if (!rendering) tryFocused = false; };
+  step("3", "Try it", t, el("p", null, "While you hold the key, a bar at the bottom of the screen says “Listening”; then it shows what you said."));
+  view.append(steps);
+
+  const term = q.value.trim().toLowerCase();
+  const items = dictation.history.filter(d => !term || d.text.toLowerCase().includes(term));
+  const hist = el("div", "history");
+  hist.append(el("h2", null, "History"));
+  if (!items.length) hist.append(el("div", "empty", term ? "No dictation matches." : "Your dictations show up here."));
+  let day = null;
+  for (const d of items) {
+    if (d.day !== day) { day = d.day; hist.append(el("div", "day", day)); }
+    const row = el("div", "said");
+    const copy = el("button", "copy", "Copy");
+    copy.onclick = () => {
+      const area = el("textarea");
+      area.value = d.text;
+      document.body.append(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+    };
+    row.append(el("span", "ts", d.time), el("span", null, d.text), copy);
+    hist.append(row);
+  }
+  view.append(hist);
+  if (tryFocused) {
+    t.focus();
+    t.selectionStart = t.selectionEnd = t.value.length;
+  }
+}
+
+const dictNew = document.getElementById("dict-new");
+dictNew.querySelector("button").onclick = () => switchTab("dictation");
+// Called by the app whenever the Dictation tab's state changes.
+dictNew.hidden = !dictation || dictation.chosen;
+window.merkwerkDictation = d => {
+  dictation = d;
+  dictNew.hidden = d.chosen || tab === "dictation";
+  if (tab === "dictation") { renderList(); renderView(false); }
+};
+
 function emptyNotes(m) {
   const e = el("div", "empty");
   if (m.live) e.textContent = "Notes are written when the meeting ends. The transcript fills in while it runs.";
   else if (m.writing) { e.classList.add("writing"); e.append(el("span", "spinner"), "Writing notes…"); }
   else if (m.today) e.textContent = "Today's work log is written after midnight. Activity shows what was recorded so far.";
-  else if (m.kind === "log") e.textContent = "No work log yet.";
+  else if (m.kind === "log") e.textContent = notesProblem ? `No work log yet. ${notesProblem}` : "No work log yet.";
   else if (!m.lines.length) e.textContent = "Nothing was said in this recording.";
-  else if (window.webkit?.messageHandlers?.merkwerk) {
-    e.append("No notes yet. ");
-    const b = el("button", "copy", "Write notes");
-    b.title = "Write the notes for this meeting with the notes model";
-    b.onclick = () => window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: "summarize", target: m.id }));
-    e.append(b);
+  else {
+    e.append(m.notes_error ? `Notes weren't written. ${m.notes_error} The transcript is saved.` : "No notes yet.");
+    const actions = el("div", "actions");
+    const write = el("button", "act", "Write notes");
+    write.onclick = () => { post({ action: "summarize", target: m.id }); m.writing = true; renderView(false); };
+    actions.append(write);
+    if (m.notes_error || notesProblem) {
+      const help = el("button", "copy", "How to set up a notes model");
+      help.onclick = () => openUrl(SETUP_URL);
+      actions.append(help);
+    }
+    e.append(actions);
   }
-  else e.innerHTML = `No notes yet. Run <code>merkwerk summarize ${m.id}</code> to write them.`;
   return e;
 }
 
@@ -685,6 +849,27 @@ rec.hidden = !window.webkit?.messageHandlers?.merkwerk;
 rec.onclick = () => {
   window.webkit.messageHandlers.merkwerk.postMessage(JSON.stringify({ action: rec.classList.contains("on") ? "stop" : "start" }));
 };
+// Where the README explains setting up a notes model; same as summarize::SETUP_URL.
+const SETUP_URL = "https://github.com/ArzelaAscoIi/merkwerk#notes-model";
+const openUrl = url => post({ action: "open_url", url });
+// Links (in notes, chat answers) open in the browser, not inside this window.
+document.addEventListener("click", e => {
+  const a = e.target.closest?.("a[href^='http']");
+  if (!a) return;
+  e.preventDefault();
+  openUrl(a.href);
+});
+// Called by the app every second: why notes can't be written now, or null.
+let notesProblem = null;
+const notesOff = document.getElementById("notes-off");
+notesOff.querySelector("button").onclick = () => openUrl(SETUP_URL);
+window.merkwerkNotesServer = problem => {
+  const changed = problem !== notesProblem;
+  notesProblem = problem;
+  notesOff.hidden = !problem;
+  notesOff.querySelector("span").textContent = problem ? `Notes are off. ${problem}` : "";
+  if (changed && !rendering && tab !== "dictation") renderView(false);
+};
 // Called by the app every second: screen activity is on but lacks the Accessibility permission.
 const blocked = document.getElementById("blocked");
 blocked.querySelector("button").onclick = () =>
@@ -718,6 +903,7 @@ window.merkwerkUpdate = data => {
 const [hashId, hashMode] = decodeURIComponent(location.hash.slice(1)).split("/");
 const linked = meetings.find(m => m.id === hashId);
 if (linked?.kind === "log") tab = "activity";
+if (hashId === "dictation") { tab = "dictation"; dictNew.hidden = true; }
 current = linked ? hashId : visible()[0]?.id;
 if (hashMode === "transcript") mode = "transcript";
 renderTabs();

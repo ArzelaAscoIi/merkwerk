@@ -27,7 +27,12 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
     // Only whether audio is still being written matters (the "Recording" badge), not each flush.
     let mut live = vec![];
     for dir in std::fs::read_dir(&store.root).into_iter().flatten().flatten() {
-        for file in ["meta.json", "summary.md", "transcript.jsonl"] {
+        for file in [
+            "meta.json",
+            "summary.md",
+            "transcript.jsonl",
+            crate::session::NOTES_ERROR,
+        ] {
             add(&dir.path().join(file));
         }
         live.push(crate::store::recent(&dir.path().join("me.wav")));
@@ -58,9 +63,9 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
     h.finish()
 }
 
-/// The full page around `data` (from [`data`]).
-pub fn page(data: &str) -> String {
-    TEMPLATE.replace("/*DATA*/", data)
+/// The full page around `data` (from [`data`]) and the Dictation tab's `dictation` state.
+pub fn page(data: &str, dictation: &str) -> String {
+    TEMPLATE.replace("/*DATA*/", data).replace("/*DICTATION*/", dictation)
 }
 
 /// Each meeting's JSON, keyed by the sizes and mtimes of its files, its live flag and the day:
@@ -81,7 +86,12 @@ pub fn data(cfg: &Config, store: &Store) -> String {
         .iter()
         .map(|m| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            for file in ["meta.json", "summary.md", "transcript.jsonl"] {
+            for file in [
+                "meta.json",
+                "summary.md",
+                "transcript.jsonl",
+                crate::session::NOTES_ERROR,
+            ] {
                 let md = std::fs::metadata(store.dir(&m.id).join(file)).ok();
                 md.as_ref().map(|md| (md.len(), md.modified().ok())).hash(&mut h);
             }
@@ -148,6 +158,7 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
         "tags": m.tags,
         "live": store.live(m),
         "writing": writing(&m.id),
+        "notes_error": store.read(&m.id, crate::session::NOTES_ERROR),
         "notes": (!summary.trim().is_empty()).then(|| render(&summary)),
         "lines": lines,
         "search": search,
@@ -295,6 +306,10 @@ mod preview {
     fn write_preview() {
         let cfg = crate::config::Config::from_env();
         let store = crate::store::Store { root: cfg.root.clone() };
-        std::fs::write(std::env::var("OUT").unwrap(), super::page(&super::data(&cfg, &store))).unwrap();
+        std::fs::write(
+            std::env::var("OUT").unwrap(),
+            super::page(&super::data(&cfg, &store), &crate::dictate::page_state(&cfg)),
+        )
+        .unwrap();
     }
 }

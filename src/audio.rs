@@ -37,15 +37,25 @@ pub struct Capture {
 
 pub fn start(tx: Sender<(Source, Vec<f32>)>) -> Result<Capture> {
     let host = cpal::default_host();
-    let mic = host.default_input_device().context("no input device")?;
     let out = host.default_output_device().context("no output device")?;
-    let (mic_stream, mic_rate) = open(&mic, mic.default_input_config()?, Source::Me, tx.clone())?;
+    let (mic_stream, mic_rate) = open_mic(tx.clone())?;
     // Building an input stream on an output device is cpal's loopback (macOS 14.6+).
     let (out_stream, out_rate) = open(&out, out.default_output_config()?, Source::Them, tx)?;
     Ok(Capture {
         streams: vec![mic_stream, out_stream],
         resamplers: [Resampler::new(mic_rate), Resampler::new(out_rate)],
     })
+}
+
+/// The microphone alone (dictation), with its resampler to 16 kHz.
+pub fn mic(tx: Sender<(Source, Vec<f32>)>) -> Result<(cpal::Stream, Resampler)> {
+    let (stream, rate) = open_mic(tx)?;
+    Ok((stream, Resampler::new(rate)))
+}
+
+fn open_mic(tx: Sender<(Source, Vec<f32>)>) -> Result<(cpal::Stream, u32)> {
+    let mic = cpal::default_host().default_input_device().context("no input device")?;
+    open(&mic, mic.default_input_config()?, Source::Me, tx)
 }
 
 fn open(

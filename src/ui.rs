@@ -14,9 +14,9 @@ use objc2::{
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions, NSBackingStoreType,
     NSBox, NSBoxType, NSButton, NSColor, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSFont,
-    NSFontWeightMedium, NSImage, NSMenu, NSMenuItem, NSPanel, NSRequestUserAttentionType, NSScreen, NSStatusBar,
-    NSStatusItem, NSStatusWindowLevel, NSTextAlignment, NSTextField, NSTitlePosition, NSVariableStatusItemLength,
-    NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSFontWeightMedium, NSImage, NSLineBreakMode, NSMenu, NSMenuItem, NSPanel, NSRequestUserAttentionType, NSScreen,
+    NSStatusBar, NSStatusItem, NSStatusWindowLevel, NSTextAlignment, NSTextField, NSTitlePosition,
+    NSVariableStatusItemLength, NSView, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString, NSTimer, ns_string};
 use objc2_web_kit::{
@@ -37,6 +37,8 @@ use std::{
 pub static RECORDING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 /// Ids of meetings still being transcribed / summarized.
 pub static FINISHING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The menu asked for the Dictation tab; switched to on the next refresh, once the page has loaded.
+static SHOW_DICTATION: AtomicBool = AtomicBool::new(false);
 /// Menu clicks, consumed by the watch loop.
 pub static START: AtomicBool = AtomicBool::new(false);
 pub static STOP: AtomicBool = AtomicBool::new(false);
@@ -48,6 +50,9 @@ pub static AUTO: AtomicBool = AtomicBool::new(false);
 pub static SCREEN: AtomicBool = AtomicBool::new(false);
 /// A call detected in manual mode, waiting for Record or Ignore.
 pub static PENDING: Mutex<Option<String>> = Mutex::new(None);
+/// Why notes can't be written right now (no server, model missing), in plain words; None when fine
+/// or unknown (a hosted endpoint without a model list).
+static NOTES_PROBLEM: Mutex<Option<String>> = Mutex::new(None);
 /// Models offered by the notes server, refreshed in the background.
 static SERVER_MODELS: Mutex<Vec<String>> = Mutex::new(vec![]);
 /// Chat answers waiting to be handed to the page: (request id, answer HTML).
@@ -79,6 +84,8 @@ thread_local! {
     /// Latest status menu, also served as the Dock icon's right-click menu.
     static DOCK_MENU: RefCell<Option<Retained<NSMenu>>> = const { RefCell::new(None) };
     static NOTES: RefCell<Option<NotesWindow>> = const { RefCell::new(None) };
+    /// Dictation tab state last sent to the notes page.
+    static DICTATION_SHOWN: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 define_class!(
@@ -99,6 +106,12 @@ define_class!(
         #[unsafe(method(notes:))]
         fn notes(&self, _item: &NSMenuItem) {
             open_notes(MainThreadMarker::from(self));
+        }
+
+        #[unsafe(method(dictation:))]
+        fn dictation(&self, _item: &NSMenuItem) {
+            open_notes(MainThreadMarker::from(self));
+            SHOW_DICTATION.store(true, Ordering::Relaxed);
         }
 
         #[unsafe(method(pick:))]
@@ -147,11 +160,13 @@ define_class!(
 
         #[unsafe(method(auto:))]
         fn auto(&self, _sender: &NSObject) {
-            let on = !AUTO.load(Ordering::Relaxed);
-            AUTO.store(on, Ordering::Relaxed);
-            if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
-                let _ = crate::config::set_setting(&cfg.root, "auto_record", on.into());
-            }
+            set_auto(!AUTO.load(Ordering::Relaxed));
+        }
+
+        /// The pill's Always: turns auto-record on, which also records the call it is shown for.
+        #[unsafe(method(always:))]
+        fn always(&self, _sender: &NSObject) {
+            set_auto(true);
         }
 
         /// The pill's Stop: only ever stops, so a late second click can't start a new recording.
@@ -197,6 +212,33 @@ define_class!(
             match req["action"].as_str() {
                 Some("start") => return START.store(true, Ordering::Relaxed),
                 Some("stop") => return STOP.store(true, Ordering::Relaxed),
+                Some("record_shortcut") => {
+                    *crate::dictate::CAPTURE.lock().unwrap() = crate::dictate::Capture::Listening;
+                    return;
+                }
+                Some("cancel_shortcut") => {
+                    *crate::dictate::CAPTURE.lock().unwrap() = crate::dictate::Capture::Off;
+                    return;
+                }
+                Some("clear_shortcut") => {
+                    if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
+                        crate::dictate::set_shortcut(&cfg, vec![]);
+                    }
+                    return;
+                }
+                // Links in the page open in the browser, never inside the notes window.
+                Some("open_url") => {
+                    if let Some(url) = req["url"].as_str().filter(|u| u.starts_with("https://")) {
+                        let _ = Command::new("open").arg(url).spawn();
+                    }
+                    return;
+                }
+                Some("summarize") => {
+                    if let (Some((cfg, store)), Some(id)) = (STORE.with_borrow(|s| s.clone()), req["target"].as_str()) {
+                        write_notes(cfg, store, id.to_string());
+                    }
+                    return;
+                }
                 Some("accessibility") => {
                     let _ = Command::new("open").arg(ACCESSIBILITY_SETTINGS).spawn();
                     return;
@@ -276,8 +318,14 @@ define_class!(
                     .unwrap_or_default();
                 let target = req["target"].as_str().unwrap_or_default();
                 let question = req["question"].as_str().unwrap_or_default();
-                let answer = crate::ask::answer(&cfg, &store, target, &history, question)
-                    .unwrap_or_else(|e| format!("Could not answer: {e:#}"));
+                let answer = crate::ask::answer(&cfg, &store, target, &history, question).unwrap_or_else(|e| {
+                    eprintln!("ask: {e:#}");
+                    format!(
+                        "{} [How to set up a notes model]({})",
+                        crate::summarize::explain(&cfg, &e),
+                        crate::summarize::SETUP_URL
+                    )
+                });
                 let html = crate::notes::markdown(&answer);
                 ANSWERS
                     .lock()
@@ -356,13 +404,37 @@ fn set_recorded(cfg: &Config, app: String, record: bool) {
 }
 
 /// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
+/// Auto-record on or off, saved to settings.json.
+fn set_auto(on: bool) {
+    AUTO.store(on, Ordering::Relaxed);
+    if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
+        let _ = crate::config::set_setting(&cfg.root, "auto_record", on.into());
+    }
+}
+
+/// Writes a meeting's notes again in the background (the Write notes button), like after a recording.
+fn write_notes(cfg: Config, store: Store, id: String) {
+    let mut finishing = FINISHING.lock().unwrap();
+    if finishing.contains(&id) || store.load(&id).is_ok_and(|m| store.live(&m)) {
+        return;
+    }
+    finishing.push(id.clone());
+    std::thread::spawn(move || {
+        if let Err(e) = crate::session::finalize(&cfg, &store, &id) {
+            eprintln!("notes for {id}: {e:#}");
+        }
+        FINISHING.lock().unwrap().retain(|f| *f != id);
+    });
+}
+
 fn watch_models(cfg: &Config) {
     let cfg = cfg.clone();
     std::thread::spawn(move || {
         loop {
             // Re-read each time: the menu can switch servers.
-            let names: Option<Vec<String>> = cfg.models_url().and_then(|url| {
-                let mut req = ureq::get(&url);
+            let url = cfg.models_url();
+            let names: Option<Vec<String>> = url.as_ref().and_then(|url| {
+                let mut req = ureq::get(url);
                 if let Some(key) = &cfg.llm_key {
                     req = req.header("Authorization", &format!("Bearer {key}"));
                 }
@@ -375,6 +447,24 @@ fn watch_models(cfg: &Config) {
                             .map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
                     })
             });
+            let server = crate::summarize::server_name(&cfg);
+            let model = cfg.llm_model();
+            // Ollama lists `gemma4` as `gemma4:latest`.
+            let has = |n: &Vec<String>| {
+                n.iter()
+                    .any(|m| *m == model || m.strip_suffix(":latest") == Some(model.as_str()))
+            };
+            *NOTES_PROBLEM.lock().unwrap() = match (&url, &names) {
+                (None, _) => None,
+                (Some(_), None) => Some(format!(
+                    "No notes model is running: {server} isn't reachable on this Mac."
+                )),
+                (Some(_), Some(n)) if n.is_empty() => Some(format!("{server} is running but has no model installed.")),
+                (Some(_), Some(n)) if !has(n) => Some(format!(
+                    "The notes model “{model}” isn't installed in {server}. Pick another one under Notes model in the menu."
+                )),
+                _ => None,
+            };
             // Empty on failure so a previous server's models don't linger.
             let mut names = names.unwrap_or_default();
             names.sort();
@@ -402,7 +492,12 @@ pub fn run(cfg: Config, store: Store) -> ! {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     let pill = std::rc::Rc::new(Pill::new(mtm, &handler));
     let meter = pill.clone();
-    let level = block2::RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| meter.level());
+    let hud = Hud::new(mtm);
+    let level = block2::RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
+        // Before the pill: it resets the mic level it reads.
+        hud.update(mtm);
+        meter.level();
+    });
     let _level_timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(0.1, true, &level) };
     let mut last_menu = String::new();
     let mut last_badge = String::new();
@@ -505,6 +600,8 @@ enum Row {
     Auto(bool),
     Screen(bool),
     Notes,
+    /// Opens the notes window on the Dictation tab.
+    Dictation(String),
     Open(String, PathBuf),
 }
 
@@ -553,6 +650,12 @@ fn entries(store: &Store) -> Vec<Row> {
             ACCESSIBILITY_SETTINGS.into(),
         ));
     }
+    if NOTES_PROBLEM.lock().unwrap().is_some() {
+        rows.push(Row::Open(
+            "⚠︎ Notes are off: set up a notes model…".into(),
+            crate::summarize::SETUP_URL.into(),
+        ));
+    }
     rows.push(Row::Separator);
     if let Some((cfg, _)) = STORE.with_borrow(|s| s.clone()) {
         let engine = cfg.engine();
@@ -592,6 +695,12 @@ fn entries(store: &Store) -> Vec<Row> {
             .map(|m| (m.clone(), same(&m), Pick::Llm(m)))
             .collect();
         rows.push(Row::Choice("Notes model", notes));
+        let shortcut = crate::dictate::label(&crate::dictate::SHORTCUT.lock().unwrap());
+        rows.push(Row::Dictation(if shortcut.is_empty() {
+            "Set up dictation…".into()
+        } else {
+            format!("Dictation: hold {shortcut}…")
+        }));
     }
     rows.push(Row::Notes);
     rows.push(Row::Separator);
@@ -675,6 +784,9 @@ fn menu(mtm: MainThreadMarker, handler: &Handler, rows: &[Row]) -> Retained<NSMe
                     NSControlStateValueOff
                 });
             }
+            Row::Dictation(label) => unsafe {
+                add(label, Some(sel!(dictation:)), ns_string!("")).setTarget(Some(handler))
+            },
             Row::Notes => unsafe { add("Open notes", Some(sel!(notes:)), ns_string!("o")).setTarget(Some(handler)) },
             Row::Open(label, path) => {
                 let item = add(label, Some(sel!(open:)), ns_string!(""));
@@ -749,7 +861,9 @@ fn open_notes(mtm: MainThreadMarker) {
             (window, web, 0)
         });
         // A fresh page on every open; live updates in between go through refresh_notes.
-        unsafe { web.loadHTMLString_baseURL(&NSString::from_str(&notes::page(&data)), None) };
+        let dictation = crate::dictate::page_state(&cfg);
+        unsafe { web.loadHTMLString_baseURL(&NSString::from_str(&notes::page(&data, &dictation)), None) };
+        DICTATION_SHOWN.with_borrow_mut(|s| *s = dictation);
         *shown = notes::fingerprint(&cfg, &store);
         window.makeKeyAndOrderFront(None);
     });
@@ -772,18 +886,31 @@ fn refresh_notes(cfg: &Config, store: &Store) {
         }
         // The context menu's Reload blanks a page loaded from an HTML string: load it again.
         if unsafe { !web.isLoading() && web.title().is_none_or(|t| t.length() == 0) } {
-            let page = notes::page(&notes::data(cfg, store));
+            let dictation = crate::dictate::page_state(cfg);
+            let page = notes::page(&notes::data(cfg, store), &dictation);
             unsafe { web.loadHTMLString_baseURL(&NSString::from_str(&page), None) };
+            DICTATION_SHOWN.with_borrow_mut(|s| *s = dictation);
             *shown = notes::fingerprint(cfg, store);
             return;
         }
         let js = format!(
-            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({}); window.merkwerkIgnored({})",
+            "window.merkwerkRecording({}); window.merkwerkScreenBlocked({}); window.merkwerkNotesServer({}); window.merkwerkIgnored({})",
             RECORDING.lock().unwrap().is_some(),
             screen_blocked(),
+            serde_json::json!(*NOTES_PROBLEM.lock().unwrap()),
             serde_json::json!(cfg.ignore())
         );
         unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
+        if SHOW_DICTATION.swap(false, Ordering::Relaxed) {
+            unsafe { web.evaluateJavaScript_completionHandler(ns_string!("switchTab(\"dictation\")"), None) };
+        }
+        // The Dictation tab: sent only when it changed.
+        let state = crate::dictate::page_state(cfg);
+        if DICTATION_SHOWN.with_borrow(|s| *s != state) {
+            let js = format!("window.merkwerkDictation({state})");
+            unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
+            DICTATION_SHOWN.with_borrow_mut(|s| *s = state);
+        }
         for (id, answer) in ANSWERS.lock().unwrap().drain(..) {
             let js = format!("window.merkwerkAnswer({id}, {answer})");
             unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(&js), None) };
@@ -843,6 +970,33 @@ fn pill_state() -> PillState {
     }
 }
 
+/// The last two transcribed lines of the meeting being recorded, as (speaker, text), for the
+/// hovered pill. Calls are transcribed in 30 s chunks, so this trails the conversation by up to that.
+fn latest_said() -> Vec<(String, String)> {
+    let Some((_, store)) = STORE.with_borrow(|s| s.clone()) else {
+        return vec![];
+    };
+    let Some(m) = store.list().into_iter().find(|m| store.live(m)) else {
+        return vec![];
+    };
+    let them = store.them_name(&m.id).unwrap_or_else(|| "Them".into());
+    let segments = store.segments(&m.id);
+    if segments.is_empty() {
+        return vec![(String::new(), "Transcript starts after the first 30 seconds".into())];
+    }
+    segments[segments.len().saturating_sub(SAID_LINES)..]
+        .iter()
+        .map(|s| {
+            let who = if s.source == crate::audio::Source::Me {
+                "Me".into()
+            } else {
+                them.clone()
+            };
+            (who, s.text.clone())
+        })
+        .collect()
+}
+
 /// Floating pill at the top of the screen, on every desktop: the recording indicator and the
 /// Record/Ignore prompt for a detected call. Unlike the menu bar item, the notch can't hide it.
 /// While recording it shrinks to a breathing dot and the time; hovering it shows the app and Stop.
@@ -852,6 +1006,11 @@ struct Pill {
     label: Retained<NSTextField>,
     primary: Retained<NSButton>,
     secondary: Retained<NSButton>,
+    always: Retained<NSButton>,
+    /// The latest transcript lines, shown under the row while hovering a recording.
+    said: Retained<NSView>,
+    /// One (speaker, text) pair of labels per transcript line, oldest first.
+    lines: Vec<(Retained<NSTextField>, Retained<NSTextField>)>,
     compact: Cell<bool>,
     /// Hover expands only once the mouse has left the pill since recording began, so the click on
     /// Record can't turn into a click on Stop.
@@ -861,9 +1020,12 @@ struct Pill {
     born: Instant,
 }
 
-const PILL_W: f64 = 320.0;
+const PILL_W: f64 = 380.0;
 const PILL_H: f64 = 28.0;
 const PILL_COMPACT_W: f64 = 76.0;
+/// Extra height of the hovered recording pill for the latest transcript lines.
+const SAID_H: f64 = 44.0;
+const SAID_LINES: usize = 2;
 
 /// The notes page's dark-mode accent, #3cc497; the pill is always dark.
 fn accent() -> Retained<NSColor> {
@@ -910,6 +1072,8 @@ impl Pill {
         let text = |s: &str, x: f64, w: f64, color: &NSColor| {
             let t = NSTextField::labelWithString(&NSString::from_str(s), mtm);
             t.setFrame(NSRect::new(NSPoint::new(x, 6.0), NSSize::new(w, 16.0)));
+            // The row stays at the top when the pill grows for the transcript.
+            t.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
             t.setTextColor(Some(color));
             t.setFont(Some(&NSFont::systemFontOfSize_weight(12.0, unsafe {
                 NSFontWeightMedium
@@ -926,13 +1090,46 @@ impl Pill {
             b.setControlSize(size);
             let h = if size == NSControlSize::Small { 22.0 } else { PILL_H };
             b.setFrame(NSRect::new(NSPoint::new(x, (PILL_H - h) / 2.0), NSSize::new(w, h)));
-            b.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+            b.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
             root.addSubview(&b);
             b
         };
         // Record is the big one: it is what a detected call is shown for.
         let primary = button(sel!(record:), PILL_W - 100.0, 96.0, NSControlSize::Regular);
         let secondary = button(sel!(ignore:), PILL_W - 160.0, 56.0, NSControlSize::Small);
+        let always = button(sel!(always:), PILL_W - 220.0, 56.0, NSControlSize::Small);
+        always.setTitle(ns_string!("Always"));
+        always.setToolTip(Some(ns_string!("Record this call and every call from now on")));
+        // Caption lines under the row: speaker in grey, then one line of text that keeps the
+        // newest words visible.
+        let said = NSView::initWithFrame(
+            mtm.alloc(),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(PILL_W, SAID_H)),
+        );
+        let lines = (0..SAID_LINES)
+            .map(|i| {
+                let y = SAID_H - 8.0 - 17.0 * (i + 1) as f64;
+                let who = NSTextField::labelWithString(ns_string!(""), mtm);
+                who.setFrame(NSRect::new(NSPoint::new(16.0, y), NSSize::new(56.0, 15.0)));
+                who.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.55, 1.0)));
+                who.setFont(Some(&NSFont::systemFontOfSize_weight(11.0, unsafe {
+                    NSFontWeightMedium
+                })));
+                who.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+                let text = NSTextField::labelWithString(ns_string!(""), mtm);
+                text.setFrame(NSRect::new(NSPoint::new(76.0, y), NSSize::new(PILL_W - 92.0, 15.0)));
+                text.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.92, 1.0)));
+                text.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+                text.setLineBreakMode(NSLineBreakMode::ByTruncatingHead);
+                said.addSubview(&who);
+                said.addSubview(&text);
+                (who, text)
+            })
+            .collect();
+        said.setHidden(true);
+        root.addSubview(&said);
         panel.setContentView(Some(&root));
         Pill {
             panel,
@@ -940,6 +1137,9 @@ impl Pill {
             label,
             primary,
             secondary,
+            always,
+            said,
+            lines,
             compact: Cell::new(false),
             armed: Cell::new(false),
             text: RefCell::default(),
@@ -981,29 +1181,51 @@ impl Pill {
         let width = if compact {
             PILL_COMPACT_W - 32.0
         } else if self.secondary.isHidden() {
-            190.0
+            250.0
         } else {
             130.0
         };
+        // The row sits on top; the captions, when shown, take the space below it.
+        let y = if self.said.isHidden() { 6.0 } else { SAID_H + 6.0 };
         self.label
-            .setFrame(NSRect::new(NSPoint::new(26.0, 6.0), NSSize::new(width, 16.0)));
+            .setFrame(NSRect::new(NSPoint::new(26.0, y), NSSize::new(width, 16.0)));
+    }
+
+    fn show_said(&self) {
+        let said = latest_said();
+        for (i, (who, text)) in self.lines.iter().enumerate() {
+            // Fewer lines than rows: fill from the bottom, so the newest is always last.
+            let line = (i + said.len()).checked_sub(SAID_LINES).and_then(|k| said.get(k));
+            let (w, t) = line.map_or(("", ""), |(w, t)| (w.as_str(), t.as_str()));
+            who.setStringValue(&NSString::from_str(w));
+            text.setStringValue(&NSString::from_str(t));
+        }
     }
 
     /// Resizes around the same center; the compact pill shows only the dot and the time.
     fn set_compact(&self, compact: bool) {
-        if compact == self.compact.get() {
+        // Hovering a recording also shows what was said last, below the row.
+        let tall = !compact && RECORDING.lock().unwrap().is_some();
+        if compact == self.compact.get() && tall != self.said.isHidden() {
             return;
         }
         self.compact.set(compact);
-        self.set_label();
         self.primary.setHidden(compact);
+        if tall {
+            self.show_said();
+        }
+        self.said.setHidden(!tall);
         let width = if compact { PILL_COMPACT_W } else { PILL_W };
+        let height = if tall { PILL_H + SAID_H } else { PILL_H };
         let f = self.panel.frame();
         let x = f.origin.x + (f.size.width - width) / 2.0;
+        let top = f.origin.y + f.size.height;
         self.panel.setFrame_display(
-            NSRect::new(NSPoint::new(x, f.origin.y), NSSize::new(width, PILL_H)),
+            NSRect::new(NSPoint::new(x, top - height), NSSize::new(width, height)),
             true,
         );
+        // After the resize: the row's labels move with the top edge, so place them in the final size.
+        self.set_label();
         self.panel.invalidateShadow();
     }
 
@@ -1041,9 +1263,13 @@ impl Pill {
         let action = if recording { sel!(stop:) } else { sel!(record:) };
         unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
+        self.always.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));
         *self.text.borrow_mut() = (short, full);
         self.set_label();
+        if recording && !self.said.isHidden() {
+            self.show_said();
+        }
         if !self.panel.isVisible() {
             // Where it was left (its center, as it may have been compact then), if that screen is
             // still there; otherwise top center of the main screen.
@@ -1073,8 +1299,125 @@ impl Pill {
                     .setFrame_display(NSRect::new(NSPoint::new(x, y), NSSize::new(PILL_W, PILL_H)), false);
             }
             self.compact.set(false);
+            self.said.setHidden(true);
             self.set_compact(recording);
             self.panel.orderFrontRegardless();
         }
+    }
+}
+
+const HUD_W: f64 = 460.0;
+const HUD_H: f64 = 44.0;
+
+/// The dictation overlay at the bottom of the screen: Listening (with the mic level), Transcribing,
+/// then the dictated words for a few seconds.
+struct Hud {
+    panel: Retained<NSPanel>,
+    dot: Retained<NSTextField>,
+    label: Retained<NSTextField>,
+    shown: RefCell<Option<crate::dictate::Overlay>>,
+}
+
+impl Hud {
+    fn new(mtm: MainThreadMarker) -> Self {
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(HUD_W, HUD_H));
+        let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
+            mtm.alloc(),
+            rect,
+            NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+            NSBackingStoreType::Buffered,
+            false,
+        );
+        unsafe { panel.setReleasedWhenClosed(false) };
+        panel.setLevel(NSStatusWindowLevel);
+        panel.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
+        panel.setHidesOnDeactivate(false);
+        panel.setIgnoresMouseEvents(true);
+        panel.setOpaque(false);
+        panel.setHasShadow(true);
+        panel.setBackgroundColor(Some(&NSColor::clearColor()));
+        let root = NSView::initWithFrame(mtm.alloc(), rect);
+        let background = NSBox::initWithFrame(mtm.alloc(), rect);
+        background.setBoxType(NSBoxType::Custom);
+        background.setTitlePosition(NSTitlePosition::NoTitle);
+        background.setBorderWidth(0.0);
+        background.setCornerRadius(14.0);
+        background.setFillColor(&NSColor::colorWithWhite_alpha(0.09, 0.94));
+        root.addSubview(&background);
+        let dot = NSTextField::labelWithString(ns_string!("●"), mtm);
+        dot.setFrame(NSRect::new(
+            NSPoint::new(12.0, (HUD_H - 16.0) / 2.0),
+            NSSize::new(16.0, 16.0),
+        ));
+        dot.setTextColor(Some(&NSColor::systemRedColor()));
+        root.addSubview(&dot);
+        let label = NSTextField::wrappingLabelWithString(ns_string!(""), mtm);
+        label.setFrame(NSRect::new(
+            NSPoint::new(34.0, 5.0),
+            NSSize::new(HUD_W - 48.0, HUD_H - 10.0),
+        ));
+        label.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.95, 1.0)));
+        label.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, unsafe {
+            NSFontWeightMedium
+        })));
+        label.setMaximumNumberOfLines(2);
+        label.setLineBreakMode(NSLineBreakMode::ByTruncatingHead);
+        root.addSubview(&label);
+        panel.setContentView(Some(&root));
+        Hud {
+            panel,
+            dot,
+            label,
+            shown: RefCell::new(None),
+        }
+    }
+
+    /// Called every 100 ms.
+    fn update(&self, mtm: MainThreadMarker) {
+        use crate::dictate::{OVERLAY, Overlay};
+        let mut now = OVERLAY.lock().unwrap().clone();
+        if let Overlay::Said(_, until) = &now
+            && Instant::now() >= *until
+        {
+            now = Overlay::Hidden;
+            *OVERLAY.lock().unwrap() = Overlay::Hidden;
+        }
+        if now == Overlay::Listening {
+            // The dot follows the mic level, like the recording pill.
+            let peak = f32::from_bits(crate::audio::LEVEL.load(Ordering::Relaxed));
+            self.dot.setAlphaValue((0.35 + 1.5 * peak.sqrt()).min(1.0) as f64);
+        }
+        if self.shown.borrow().as_ref() == Some(&now) {
+            return;
+        }
+        let (text, color) = match &now {
+            Overlay::Hidden => {
+                self.panel.orderOut(None);
+                *self.shown.borrow_mut() = Some(now);
+                return;
+            }
+            Overlay::Listening => ("Listening… release to paste".to_string(), NSColor::systemRedColor()),
+            Overlay::Transcribing => ("Transcribing…".to_string(), NSColor::systemOrangeColor()),
+            Overlay::Said(text, _) => (text.clone(), accent()),
+        };
+        self.dot.setTextColor(Some(&color));
+        self.dot.setAlphaValue(1.0);
+        self.label.setStringValue(&NSString::from_str(&text));
+        if !self.panel.isVisible()
+            && let Some(screen) = NSScreen::mainScreen(mtm)
+        {
+            let f = screen.visibleFrame();
+            let x = f.origin.x + (f.size.width - HUD_W) / 2.0;
+            self.panel.setFrame_display(
+                NSRect::new(NSPoint::new(x, f.origin.y + 60.0), NSSize::new(HUD_W, HUD_H)),
+                false,
+            );
+        }
+        self.panel.orderFrontRegardless();
+        *self.shown.borrow_mut() = Some(now);
     }
 }

@@ -26,6 +26,8 @@ pub fn answer(
     history: &[(String, String)],
     question: &str,
 ) -> Result<String> {
+    // A day's log takes the global corrections, a meeting its own as well.
+    let corrections = store.context_prompt(target.strip_suffix("_log").is_none().then_some(target));
     let (prompt, context) = match target.strip_suffix("_log") {
         Some(day) => {
             let day = day.parse().context("bad day")?;
@@ -56,8 +58,9 @@ pub fn answer(
             (MEETING_PROMPT, context)
         }
     };
-    let mut messages =
-        vec![json!({"role": "system", "content": format!("{}\n\n{context}", prompt.replace("{ME}", &cfg.me))})];
+    let mut messages = vec![
+        json!({"role": "system", "content": format!("{}{}\n\n{context}", prompt.replace("{ME}", &cfg.me), corrections)}),
+    ];
     for (q, a) in history {
         messages.push(json!({"role": "user", "content": q}));
         messages.push(json!({"role": "assistant", "content": a}));

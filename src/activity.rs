@@ -398,9 +398,10 @@ pub fn write_work_log(cfg: &Config, store: &Store, day: NaiveDate) -> Result<Str
     }
     let log = summarize::chat(
         cfg,
-        &WORK_LOG_PROMPT
+        &(WORK_LOG_PROMPT
             .replace("{ME}", &cfg.me)
-            .replace("{DAY}", &day.format("%A, %Y-%m-%d").to_string()),
+            .replace("{DAY}", &day.format("%A, %Y-%m-%d").to_string())
+            + &store.context_prompt(None)),
         &input,
     )
     .context("writing work log")?;

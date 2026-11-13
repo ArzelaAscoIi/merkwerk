@@ -4,6 +4,7 @@ use crate::{
     audio::{self, RATE, Source, to_i16},
     calendar,
     config::Config,
+    detect, screen,
     store::{self, Meta, Store},
     summarize,
     transcribe::{CHUNK_SECS, Transcriber},
@@ -13,7 +14,11 @@ use hound::{WavReader, WavSpec, WavWriter};
 use std::{
     fs::{self, File},
     io::BufWriter,
-    sync::mpsc::{self, RecvTimeoutError, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError, Sender},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -77,7 +82,33 @@ pub fn record(
         })
     };
 
-    let mut sink = Sink::new(store, &meta.id, chunk_tx)?;
+    let muted = Arc::new(AtomicBool::new(false));
+    if let Some(name) = meta.app.clone() {
+        // Weak: the poller stops once the sink is dropped, also when recording fails.
+        let flag = Arc::downgrade(&muted);
+        thread::spawn(move || {
+            let mut pid = None;
+            let mut previous = false;
+            while let Some(muted) = flag.upgrade() {
+                if pid.is_none() {
+                    pid = detect::call_app_pid(&name);
+                }
+                let now = pid.is_some_and(screen::mic_muted);
+                if now != previous {
+                    if now {
+                        eprintln!("mic muted in {name}: recording silence for me");
+                    } else {
+                        eprintln!("mic unmuted in {name}");
+                    }
+                    previous = now;
+                }
+                muted.store(now, Ordering::Relaxed);
+                drop(muted);
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+    let mut sink = Sink::new(store, &meta.id, chunk_tx, muted)?;
     let mut last_check = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(500)) {
@@ -115,10 +146,11 @@ struct Sink {
     /// Samples already handed to the transcriber, per source; gives each chunk its time offset.
     sent: [usize; 2],
     chunk_tx: Sender<Chunk>,
+    muted: Arc<AtomicBool>,
 }
 
 impl Sink {
-    fn new(store: &Store, id: &str, chunk_tx: Sender<Chunk>) -> Result<Self> {
+    fn new(store: &Store, id: &str, chunk_tx: Sender<Chunk>, muted: Arc<AtomicBool>) -> Result<Self> {
         Ok(Sink {
             wavs: [
                 WavWriter::create(store.wav_path(id, Source::Me), WAV)?,
@@ -127,6 +159,7 @@ impl Sink {
             pending: Default::default(),
             sent: [0; 2],
             chunk_tx,
+            muted,
         })
     }
 
@@ -134,6 +167,10 @@ impl Sink {
         let i = source as usize;
         let from = self.pending[i].len();
         resampler.process(raw, &mut self.pending[i]);
+        // Silence before saving and chunking so muted speech never reaches the transcript.
+        if source == Source::Me && self.muted.load(Ordering::Relaxed) {
+            self.pending[i][from..].fill(0.0);
+        }
         for &s in &self.pending[i][from..] {
             self.wavs[i].write_sample(to_i16(s))?;
         }
@@ -210,6 +247,9 @@ fn cut(samples: &[f32]) -> usize {
 
 /// Write transcript.md and summary.md. Untitled meetings take the calendar event's title, else
 /// the summary's; the event's invitees are kept in meta.json and given to the notes step.
+/// Why a meeting has no notes, in plain words, when writing them failed.
+pub const NOTES_ERROR: &str = "notes_error.txt";
+
 pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     // Nothing was said (a misclick, or a call that never got going): don't keep it.
     if store.transcript(id).trim().is_empty() {
@@ -235,7 +275,17 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     // Rendered after the calendar lookup: a 1:1's invitee names the `them` lines.
     let transcript = store.transcript(id);
     store.write(id, "transcript.md", &transcript)?;
-    let summary = summarize::summarize(cfg, &meta, &transcript)?;
+    // Without a notes model the recording and transcript stay; the notes window says why and
+    // offers to write the notes later.
+    let summary = match summarize::summarize(cfg, &meta, &transcript, &store.context_prompt(Some(id))) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{id}: no notes: {e:#}");
+            store.write(id, NOTES_ERROR, &summarize::explain(cfg, &e))?;
+            return Ok(());
+        }
+    };
+    let _ = std::fs::remove_file(store.dir(id).join(NOTES_ERROR));
     store.write(id, "summary.md", &summary)?;
     // Reload: the title or tags may have been edited in the notes window while summarizing.
     let mut meta = store.load(id)?;
@@ -252,6 +302,34 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muted_mic_writes_silence_them_untouched() {
+        let root = std::env::temp_dir().join(format!("merkwerk-test-mute-{}", std::process::id()));
+        let store = Store { root };
+        let meta = store.create("t", None).unwrap();
+        let mut sink = Sink::new(&store, &meta.id, mpsc::channel().0, Arc::new(AtomicBool::new(true))).unwrap();
+        let mut resampler = audio::Resampler::new(RATE);
+        let samples = vec![0.5; 1600];
+        sink.push(&mut resampler, Source::Me, &samples).unwrap();
+        sink.push(&mut resampler, Source::Them, &samples).unwrap();
+        sink.finish().unwrap();
+
+        let me: Vec<i16> = WavReader::open(store.wav_path(&meta.id, Source::Me))
+            .unwrap()
+            .into_samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        let them: Vec<i16> = WavReader::open(store.wav_path(&meta.id, Source::Them))
+            .unwrap()
+            .into_samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        assert!(!me.is_empty());
+        assert!(me.iter().all(|&sample| sample == 0));
+        assert!(them.iter().any(|&sample| sample > 0));
+        fs::remove_dir_all(&store.root).unwrap();
+    }
 
     #[test]
     fn cut_lands_in_the_pause_near_the_end() {

@@ -185,6 +185,64 @@ impl Store {
         Ok(fs::write(self.dir(id).join(file), content)?)
     }
 
+    /// Where corrections live: `context.md` in the meeting's folder, or at the root for all meetings.
+    fn context_file(&self, id: Option<&str>) -> Result<PathBuf> {
+        Ok(match id {
+            Some(id) => self.dir(&self.load_editable(id)?.id).join("context.md"),
+            None => self.root.join("context.md"),
+        })
+    }
+
+    /// Corrections the user gave (names, who is who, background), one `- ` line each.
+    pub fn context(&self, id: Option<&str>) -> Vec<String> {
+        let Ok(file) = self.context_file(id) else { return vec![] };
+        fs::read_to_string(file)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.strip_prefix("- "))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Adds a correction for one meeting, or for all (`None`); repeats are kept once.
+    pub fn add_context(&self, id: Option<&str>, note: &str) -> Result<()> {
+        let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
+        anyhow::ensure!(!note.is_empty(), "empty note");
+        let mut notes = self.context(id);
+        if !notes.contains(&note) {
+            notes.push(note);
+        }
+        self.write_context(id, &notes)
+    }
+
+    /// Removes a correction by its exact text; false if there was none.
+    pub fn remove_context(&self, id: Option<&str>, note: &str) -> Result<bool> {
+        let mut notes = self.context(id);
+        let before = notes.len();
+        notes.retain(|n| n != note.trim());
+        self.write_context(id, &notes)?;
+        Ok(notes.len() != before)
+    }
+
+    fn write_context(&self, id: Option<&str>, notes: &[String]) -> Result<()> {
+        fs::create_dir_all(&self.root)?;
+        let text: String = notes.iter().map(|n| format!("- {n}\n")).collect();
+        Ok(fs::write(self.context_file(id)?, text)?)
+    }
+
+    /// Corrections for prompts: the global ones, plus this meeting's when given. Empty if none.
+    pub fn context_prompt(&self, id: Option<&str>) -> String {
+        let mut notes = self.context(None);
+        if id.is_some() {
+            notes.extend(self.context(id));
+        }
+        if notes.is_empty() {
+            return String::new();
+        }
+        let lines: String = notes.iter().map(|n| format!("\n- {n}")).collect();
+        format!("\nCorrections from the user (always true; they override the transcript and the glossary):{lines}")
+    }
+
     pub fn wav_path(&self, id: &str, source: Source) -> PathBuf {
         self.dir(id).join(format!("{}.wav", source.label()))
     }
