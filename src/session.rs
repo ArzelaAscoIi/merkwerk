@@ -39,11 +39,18 @@ impl Recording {
     pub fn finish(self, cfg: &Config, store: &Store) -> Result<()> {
         let _ = self.worker.join();
         // The speech model (several hundred MB) was just dropped; hand the freed pages back to
-        // macOS instead of letting the allocator keep them for the rest of the day.
-        unsafe extern "C" {
-            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        // the OS instead of letting the allocator keep them for the rest of the day.
+        #[cfg(target_os = "macos")]
+        {
+            unsafe extern "C" {
+                fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+            }
+            unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) }; // all zones, as much as possible
         }
-        unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) }; // all zones, as much as possible
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::malloc_trim(0)
+        };
         finalize(cfg, store, &self.meta.id)
     }
 }

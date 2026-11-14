@@ -45,7 +45,7 @@ impl Config {
         let var = |k: &str| env::var(k).ok().filter(|v| !v.is_empty());
         let root = var("MERKWERK_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env::var("HOME").expect("HOME not set")).join("merkwerk"));
+            .unwrap_or_else(|| home().join("merkwerk"));
         let model = var("MERKWERK_MODEL")
             .map(PathBuf::from)
             .unwrap_or_else(|| root.join("models/ggml-large-v3-turbo-q5_0.bin"));
@@ -92,7 +92,25 @@ fn list(v: &str) -> Vec<String> {
         .collect()
 }
 
+/// `HOME`, or `USERPROFILE` on Windows.
+pub fn home() -> PathBuf {
+    PathBuf::from(
+        env::var_os("HOME")
+            .or_else(|| env::var_os("USERPROFILE"))
+            .expect("HOME not set"),
+    )
+}
+
+/// First name from the account, e.g. "Kristof"; the login name outside macOS.
+#[cfg(not(target_os = "macos"))]
+fn first_name() -> String {
+    env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .unwrap_or_else(|_| "me".into())
+}
+
 /// First name from the macOS account, e.g. "Kristof".
+#[cfg(target_os = "macos")]
 fn first_name() -> String {
     std::process::Command::new("id")
         .arg("-F")

@@ -1,12 +1,15 @@
 mod activity;
 mod ask;
 mod audio;
+#[cfg_attr(not(target_os = "macos"), path = "other/calendar.rs")]
 mod calendar;
 mod config;
+#[cfg_attr(not(target_os = "macos"), path = "other/detect.rs")]
 mod detect;
 mod dictate;
 mod mcp;
 mod notes;
+#[cfg_attr(not(target_os = "macos"), path = "other/screen.rs")]
 mod screen;
 mod session;
 mod store;
@@ -29,7 +32,7 @@ use store::Store;
 
 const USAGE: &str = "merkwerk: local meeting recorder
 
-  merkwerk [watch]          menu bar + auto-record calls (default)
+  merkwerk [watch]          menu bar / tray app, watches for calls (default)
   merkwerk record [title]   record now, Enter to stop
   merkwerk list             list meetings
   merkwerk show <id>        print summary and transcript
@@ -41,7 +44,7 @@ const USAGE: &str = "merkwerk: local meeting recorder
   merkwerk summarize <id>   (re)write transcript.md and summary.md
   merkwerk mcp              MCP server on stdio
   merkwerk model            download the whisper + VAD models
-  merkwerk install          install ~/Applications/merkwerk.app (needed to hear the other side of calls)
+  merkwerk install          macOS: install ~/Applications/merkwerk.app (needed to hear the other side of calls)
 
 env: MERKWERK_DIR MERKWERK_MODEL MERKWERK_LANG MERKWERK_LLM_URL
      MERKWERK_LLM_MODEL MERKWERK_LLM_KEY MERKWERK_IGNORE MERKWERK_ME
@@ -99,6 +102,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("model") => transcribe::ensure_models(&cfg),
+        #[cfg(target_os = "macos")]
         Some("install") => install(),
         _ => {
             eprintln!("{USAGE}");
@@ -199,9 +203,11 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// Bundle id; macOS keys the mic, system audio and accessibility grants to it.
 const BUNDLE_ID: &str = "io.github.arzelaascoii.merkwerk";
 
+#[cfg(target_os = "macos")]
 /// Writes ~/Applications/merkwerk.app around a copy of this binary.
 /// macOS asks for system audio on behalf of the app that launched a process, and terminals like
 /// Ghostty or Terminal don't declare it (NSAudioCaptureUsageDescription), so from there the other
@@ -250,10 +256,12 @@ start it with: open -a merkwerk (quit any merkwerk running in a terminal first)"
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 const SIGNING_NAME: &str = "merkwerk local signing";
 
 /// A self-signed code signing certificate in the login keychain, made on first install. It never
 /// leaves this Mac and only has to stay the same; macOS doesn't need to trust it.
+#[cfg(target_os = "macos")]
 // ponytail: codesign may ask once for the login keychain password; "Always Allow" ends that.
 fn signing_identity() -> Result<&'static str> {
     use std::process::Command;
@@ -307,6 +315,12 @@ fn signing_identity() -> Result<&'static str> {
     made.map(|()| SIGNING_NAME)
 }
 
+// ponytail: Windows keeps its console window for the log; a GUI subsystem build + log file when it
+// bothers anyone.
+#[cfg(windows)]
+fn log_to_file(_cfg: &Config) {}
+
+#[cfg(unix)]
 /// Started as merkwerk.app, stderr goes nowhere; keep it in `$MERKWERK_DIR/merkwerk.log` instead.
 fn log_to_file(cfg: &Config) {
     use std::io::IsTerminal;
