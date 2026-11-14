@@ -268,6 +268,7 @@ pub fn page_state(cfg: &Config) -> String {
         "capturing": capture == Capture::Listening,
         "error": match capture { Capture::Failed(e) => Some(e), _ => None },
         "trusted": crate::screen::trusted(false),
+        "unavailable": sys::UNAVAILABLE,
         "chosen": crate::config::setting(&cfg.root, "dictate_key").is_some(),
         "history": history,
     })

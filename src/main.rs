@@ -12,6 +12,7 @@ mod notes;
 #[cfg_attr(not(target_os = "macos"), path = "other/screen.rs")]
 mod screen;
 mod session;
+mod setup;
 mod store;
 mod summarize;
 mod transcribe;
@@ -32,7 +33,8 @@ use store::Store;
 
 const USAGE: &str = "merkwerk: local meeting recorder
 
-  merkwerk [watch]          menu bar / tray app, watches for calls (default)
+  merkwerk                  start the app (macOS: installs or updates merkwerk.app first)
+  merkwerk watch            menu bar / tray app in this process, watches for calls
   merkwerk record [title]   record now, Enter to stop
   merkwerk list             list meetings
   merkwerk show <id>        print summary and transcript
@@ -44,6 +46,7 @@ const USAGE: &str = "merkwerk: local meeting recorder
   merkwerk summarize <id>   (re)write transcript.md and summary.md
   merkwerk mcp              MCP server on stdio
   merkwerk model            download the whisper + VAD models
+  merkwerk test             check that both sides of a call are heard (5 s)
   merkwerk install          macOS: install ~/Applications/merkwerk.app (needed to hear the other side of calls)
 
 env: MERKWERK_DIR MERKWERK_MODEL MERKWERK_LANG MERKWERK_LLM_URL
@@ -62,6 +65,9 @@ fn main() -> Result<()> {
     let arg = |i: usize| args.get(i).map(String::as_str);
     let id = || arg(1).context("missing <id>");
     match arg(0) {
+        // From a terminal on macOS: run as merkwerk.app, which can get the system audio permission.
+        #[cfg(target_os = "macos")]
+        None if io::IsTerminal::is_terminal(&io::stderr()) && !in_app_bundle() => start_app(),
         None | Some("watch") => watch(&cfg, &store),
         Some("record") => record(&cfg, &store, arg(1).unwrap_or(store::UNTITLED)),
         Some("list") => {
@@ -102,6 +108,21 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("model") => transcribe::ensure_models(&cfg),
+        Some("test") => {
+            eprintln!("say something for 5 seconds; merkwerk plays a short tone ...");
+            let (me, them) = setup::run_test()?;
+            for (heard, label, side) in [
+                (me, "your voice", audio::Source::Me),
+                (them, "computer audio", audio::Source::Them),
+            ] {
+                if heard {
+                    println!("✓ {label}");
+                } else {
+                    println!("✗ {label}: {}", setup::fix(side).1);
+                }
+            }
+            Ok(())
+        }
         #[cfg(target_os = "macos")]
         Some("install") => install(),
         _ => {
@@ -113,7 +134,9 @@ fn main() -> Result<()> {
 
 fn watch(cfg: &Config, store: &Store) -> Result<()> {
     log_to_file(cfg);
-    transcribe::ensure_models(cfg)?;
+    // In the background: the window opens at once and shows the download; recordings made before
+    // it finishes keep their audio (`merkwerk transcribe <id>` later).
+    ui::download_models(cfg.clone());
     eprintln!("watching for calls, meetings go to {}", cfg.root.display());
     ui::AUTO.store(config::auto_record(&cfg.root), Ordering::Relaxed);
     ui::SCREEN.store(cfg.screen_enabled(), Ordering::Relaxed);
@@ -250,11 +273,36 @@ fn install() -> Result<()> {
         .arg(&app)
         .status()?;
     anyhow::ensure!(signed.success(), "codesign failed");
-    println!(
-        "installed {}
-start it with: open -a merkwerk (quit any merkwerk running in a terminal first)",
+    println!("installed {}", app.display());
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn in_app_bundle() -> bool {
+    env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
+}
+
+/// `merkwerk` in a terminal: installs merkwerk.app (or updates it after `brew upgrade`), then opens
+/// it. A running app on an older version is left alone; quitting it would cut off a recording.
+#[cfg(target_os = "macos")]
+fn start_app() -> Result<()> {
+    use std::process::Command;
+    let app = std::path::PathBuf::from(env::var("HOME").context("HOME not set")?).join("Applications/merkwerk.app");
+    let bin = app.join("Contents/MacOS/merkwerk");
+    if std::fs::read(&bin).ok() != Some(std::fs::read(env::current_exe()?)?) {
+        let running = Command::new("pgrep").arg("-f").arg(&bin).output()?.status.success();
+        anyhow::ensure!(
+            !running,
+            "merkwerk.app runs an older version. Quit it (menu bar → Quit), then run `merkwerk` again."
+        );
+        install()?;
+    }
+    anyhow::ensure!(
+        Command::new("open").arg(&app).status()?.success(),
+        "could not open {}",
         app.display()
     );
+    println!("merkwerk is running: the window shows what is left to set up. Look for mw in the menu bar.");
     Ok(())
 }
 

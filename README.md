@@ -62,17 +62,17 @@ With [Homebrew](https://brew.sh) on Apple Silicon:
 
 ```sh
 brew install arzelaascoii/tap/merkwerk
-merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD (1 MB)
-ollama pull gemma4      # the default notes model
-merkwerk install        # writes ~/Applications/merkwerk.app
-open -a merkwerk        # opens the notes window and starts watching
+merkwerk                # installs merkwerk.app and opens it
 ```
+
+The window walks you through the rest: the speech model downloads by itself, notes need
+[Ollama](https://ollama.com/download) (one click downloads the model), and a 5 second test checks
+that both sides of a call are heard. After `brew upgrade merkwerk`, run `merkwerk` again.
 
 The binary is built by this repository's [release workflow](.github/workflows/release.yml) in
 public GitHub Actions. Each release carries the archive, its SHA-256 and a build attestation;
 check that a download was built from this source with
 `gh attestation verify merkwerk-<tag>-aarch64-apple-darwin.tar.gz -R ArzelaAscoIi/merkwerk`.
-Update with `brew upgrade merkwerk`, then run `merkwerk install` again.
 
 To build it yourself instead (Intel Macs too), install the [Rust toolchain](https://rustup.rs) and
 replace the first line with `cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.3`,
@@ -81,10 +81,8 @@ or clone the repository and run `cargo install --path .` for the latest `main`. 
 
 With LM Studio, start its local server on port 1234 from the Developer tab or with `lms server start`, and load a model.
 
-Run it as `merkwerk.app`, not from a terminal: macOS asks for system audio on behalf of the app
-that started merkwerk, and terminals like Ghostty or Terminal can't get that permission, so the
-other side of a call would record as silence. After every update, run `merkwerk install` again and
-restart the app. The app logs to `~/merkwerk/merkwerk.log`. Environment variables from your shell
+merkwerk runs as `merkwerk.app`, not in the terminal: macOS asks for system audio on behalf of the
+app that started merkwerk, and terminals can't get that permission. The app logs to `~/merkwerk/merkwerk.log`. Environment variables from your shell
 don't reach the app; use `settings.json` (see [Configuration](#configuration)).
 
 On first use macOS asks merkwerk.app for these permissions:
@@ -128,8 +126,7 @@ both:
 
 ```sh
 cargo install --git https://github.com/ArzelaAscoIi/merkwerk
-merkwerk model
-merkwerk                # tray icon + notes window
+merkwerk                # tray icon + notes window; the window walks you through setup
 ```
 
 ## Notes model

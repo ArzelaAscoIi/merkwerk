@@ -18,7 +18,7 @@ pub struct Event {
 pub fn event_at(start: f64, end: f64) -> Option<Event> {
     match unsafe { EKEventStore::authorizationStatusForEntityType(EKEntityType::Event) } {
         EKAuthorizationStatus::FullAccess => {}
-        EKAuthorizationStatus::NotDetermined if in_app_bundle() => {
+        EKAuthorizationStatus::NotDetermined if crate::in_app_bundle() => {
             let (tx, rx) = mpsc::channel();
             let done = RcBlock::new(move |granted: Bool, _: *mut NSError| {
                 let _ = tx.send(granted.as_bool());
@@ -74,8 +74,4 @@ pub fn event_at(start: f64, end: f64) -> Option<Event> {
         title: unsafe { best.title() }.to_string(),
         attendees,
     })
-}
-
-fn in_app_bundle() -> bool {
-    std::env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
 }

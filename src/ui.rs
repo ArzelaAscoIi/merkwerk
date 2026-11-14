@@ -43,6 +43,8 @@ pub static PENDING: Mutex<Option<String>> = Mutex::new(None);
 /// Why notes can't be written right now (no server, model missing), in plain words; None when fine
 /// or unknown (a hosted endpoint without a model list).
 static NOTES_PROBLEM: Mutex<Option<String>> = Mutex::new(None);
+/// The notes server answered its last model list request.
+static NOTES_REACHABLE: AtomicBool = AtomicBool::new(false);
 /// Models offered by the notes server, refreshed in the background.
 static SERVER_MODELS: Mutex<Vec<String>> = Mutex::new(vec![]);
 /// Chat answers waiting to be handed to the page: (request id, answer HTML).
@@ -198,6 +200,7 @@ fn watch_models(cfg: &Config) {
                 )),
                 _ => None,
             };
+            NOTES_REACHABLE.store(names.is_some(), Ordering::Relaxed);
             // Empty on failure so a previous server's models don't linger.
             let mut names = names.unwrap_or_default();
             names.sort();
@@ -370,6 +373,52 @@ static STORE: Mutex<Option<(Config, Store)>> = Mutex::new(None);
 thread_local! {
     /// Dictation tab state last sent to the notes page.
     static DICTATION_SHOWN: RefCell<String> = const { RefCell::new(String::new()) };
+    /// "Get started" state last sent to the notes page.
+    static SETUP_SHOWN: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// What the "Get started" page shows: speech model download, notes model, the audio test.
+fn setup_state(cfg: &Config) -> String {
+    use crate::{audio::Source, setup};
+    let engine = cfg.engine();
+    let speech_ready = crate::transcribe::installed(cfg, &engine);
+    let downloading = DOWNLOADING.lock().unwrap().is_some();
+    let ollama = cfg.llm_url() == crate::config::LLM_SERVERS[0].1;
+    let reachable = NOTES_REACHABLE.load(Ordering::Relaxed);
+    let test = setup::TEST_STATE.lock().unwrap().clone();
+    let fix = |side, heard: Option<bool>| {
+        (heard == Some(false)).then(|| {
+            let (url, text) = setup::fix(side);
+            serde_json::json!({ "url": url, "text": text })
+        })
+    };
+    serde_json::json!({
+        "speech": {
+            "ready": speech_ready,
+            "downloading": downloading,
+            "percent": crate::transcribe::progress_percent(),
+        },
+        "notes": {
+            "problem": *NOTES_PROBLEM.lock().unwrap(),
+            "model": cfg.llm_model(),
+            "server": crate::summarize::server_name(cfg),
+            // Ollama runs but lacks the model: one click downloads it.
+            "can_pull": ollama && reachable,
+            // Ollama isn't running (or installed): link to its download page.
+            "no_ollama": ollama && !reachable,
+            "pull": *setup::PULL.lock().unwrap(),
+        },
+        "test": {
+            "running": test.running,
+            "me": test.me,
+            "them": test.them,
+            "error": test.error,
+            "fix_me": fix(Source::Me, test.me),
+            "fix_them": fix(Source::Them, test.them),
+        },
+    })
+    .to_string()
+    .replace('<', "\\u003c")
 }
 
 fn set_store(cfg: &Config, store: &Store) {
@@ -467,6 +516,29 @@ fn handle_message(raw: &str) {
             }
             return;
         }
+        Some("test_audio") => return crate::setup::start_test(),
+        Some("pull_model") => {
+            if let Some((cfg, _)) = store() {
+                crate::setup::pull_model(&cfg);
+            }
+            return;
+        }
+        Some("retry_download") => {
+            if let Some((cfg, _)) = store() {
+                download_models(cfg);
+            }
+            return;
+        }
+        // System settings pages for a permission; only the ones setup::fix names.
+        Some("open_settings") => {
+            if let Some(url) = req["url"]
+                .as_str()
+                .filter(|u| u.starts_with("x-apple.systempreferences:") || u.starts_with("ms-settings:"))
+            {
+                open(url);
+            }
+            return;
+        }
         Some("accessibility") => {
             #[cfg(target_os = "macos")]
             open(ACCESSIBILITY_SETTINGS);
@@ -546,6 +618,7 @@ fn notes_page(cfg: &Config, store: &Store) -> (String, u64) {
     let dictation = crate::dictate::page_state(cfg);
     let html = notes::page(&data, &dictation);
     DICTATION_SHOWN.with_borrow_mut(|s| *s = dictation);
+    SETUP_SHOWN.with_borrow_mut(String::clear);
     (html, notes::fingerprint(cfg, store))
 }
 
@@ -567,6 +640,12 @@ fn notes_updates(cfg: &Config, store: &Store, shown: &mut u64) -> Vec<String> {
     if DICTATION_SHOWN.with_borrow(|s| *s != state) {
         js.push(format!("window.merkwerkDictation({state})"));
         DICTATION_SHOWN.with_borrow_mut(|s| *s = state);
+    }
+    // The "Get started" page: sent only when it changed.
+    let setup = setup_state(cfg);
+    if SETUP_SHOWN.with_borrow(|s| *s != setup) {
+        js.push(format!("window.merkwerkSetup({setup})"));
+        SETUP_SHOWN.with_borrow_mut(|s| *s = setup);
     }
     for (id, answer) in ANSWERS.lock().unwrap().drain(..) {
         js.push(format!("window.merkwerkAnswer({id}, {answer})"));

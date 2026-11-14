@@ -66,6 +66,8 @@
   #dict-new button { display: block; margin-top: 8px; font: inherit; font-weight: 500; color: var(--on-accent); background: var(--accent);
     border: 0; border-radius: 6px; padding: 5px 10px; cursor: default; }
   #dict-new[hidden] { display: none; }
+  /* Get started already covers these */
+  body.setup #dict-new, body.setup #notes-off { display: none; }
   .steps { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 22px; }
   .steps h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
   .steps .n { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
@@ -365,9 +367,11 @@ function renderView(animate = true) {
   rendering = true; // removing a focused input may fire blur; that is not the user leaving it
   view.replaceChildren();
   rendering = false;
+  document.body.classList.toggle("setup", !meetings.length && !!setup && tab === "meetings");
   if (tab === "dictation") { renderDictation(); return; }
   const m = meetings.find(x => x.id === current);
   if (!m) {
+    if (!meetings.length && setup) { renderSetup(); return; }
     const e = el("div", "empty");
     e.innerHTML = "Calls are recorded as soon as another app uses the microphone. " +
       "For a conversation in person, choose <b>Start recording</b> in the merkwerk menu.";
@@ -601,6 +605,65 @@ try { dictation = JSON.parse(document.getElementById("dictation").textContent); 
 const post = msg => window.webkit?.messageHandlers?.merkwerk?.postMessage(JSON.stringify(msg));
 const keyLabel = () => dictation?.shortcut || null;
 
+// "Get started": shown until the first meeting. The app sends its state with merkwerkSetup.
+let setup = null;
+window.merkwerkSetup = s => {
+  setup = s;
+  if (!meetings.length && tab === "meetings" && !rendering) renderView(false);
+};
+function renderSetup() {
+  view.append(el("h1", "title", "Get started"));
+  view.append(el("span", "meta", "Calls are recorded when another app uses the microphone. " +
+    "For a talk in person, choose Start recording."));
+  const steps = el("ol", "steps");
+  const step = (n, title, ...body) => {
+    const li = el("li");
+    const h = el("h2");
+    h.append(el("span", "n", n), title);
+    li.append(h, ...body);
+    steps.append(li);
+  };
+  const button = (cls, text, action) => {
+    const b = el("button", cls, text);
+    b.onclick = action;
+    return b;
+  };
+
+  const s = setup.speech;
+  if (s.ready) step("1", "Speech model", el("span", "ok", "✓ Ready"));
+  else if (s.downloading) step("1", "Speech model",
+    el("span", "capturing", s.percent == null ? "Downloading…" : `Downloading… ${s.percent}%`),
+    el("p", null, "About 670 MB, once."));
+  else step("1", "Speech model", button("act", "Download", () => post({ action: "retry_download" })),
+    el("p", "err", "The download stopped. Check your connection."));
+
+  const n = setup.notes;
+  if (!n.problem) step("2", "Notes", el("span", "ok", `✓ ${n.model} in ${n.server}`));
+  else if (n.pull && !n.pull.error) step("2", "Notes",
+    el("span", "capturing", n.pull.percent == null ? `Downloading ${n.model}…` : `Downloading ${n.model}… ${n.pull.percent}%`));
+  else if (n.can_pull) step("2", "Notes", button("act", `Download ${n.model}`, () => post({ action: "pull_model" })),
+    el("p", n.pull?.error ? "err" : null, n.pull?.error ?? "Summaries come from a model on this computer."));
+  else if (n.no_ollama) step("2", "Notes", button("act", "Get Ollama", () => openUrl("https://ollama.com/download")),
+    el("p", null, "Optional. Without it you get transcripts, no summaries."));
+  else step("2", "Notes", button("act", "Set up notes", () => openUrl(SETUP_URL)), el("p", null, n.problem));
+
+  const t = setup.test;
+  const result = (heard, label, fix) => {
+    const row = el("p", heard ? "ok" : "err", `${heard ? "✓" : "✗"} ${label}`);
+    if (heard || !fix) return [row];
+    const out = [row, el("p", null, fix.text)];
+    if (fix.url) out.push(button("copy", "Open settings", () => post({ action: "open_settings", url: fix.url })));
+    return out;
+  };
+  if (t.running) step("3", "Test", el("span", "capturing", "Say something…"));
+  else if (t.error) step("3", "Test", button("act", "Test again", () => post({ action: "test_audio" })), el("p", "err", t.error));
+  else if (t.me == null) step("3", "Test", button("act", "Start 5 s test", () => post({ action: "test_audio" })),
+    el("p", null, "Say something. merkwerk plays a short tone and checks it hears both."));
+  else step("3", "Test", ...result(t.me, "Your voice", t.fix_me), ...result(t.them, "Computer audio", t.fix_them),
+    button(t.me && t.them ? "copy" : "act", "Test again", () => post({ action: "test_audio" })));
+  view.append(steps);
+}
+
 function renderDictation() {
   rendering = true;
   view.replaceChildren();
@@ -609,6 +672,7 @@ function renderDictation() {
   view.append(el("span", "meta", "Hold a key in any app, speak, let go: the words are typed where your cursor is. " +
     "Everything is transcribed on this computer with the speech model chosen in the menu."));
   if (!dictation) return;
+  if (dictation.unavailable) { view.append(el("p", "empty", dictation.unavailable)); return; }
   const steps = el("ol", "steps");
   const step = (n, title, ...body) => {
     const li = el("li");
@@ -698,10 +762,10 @@ function renderDictation() {
 const dictNew = document.getElementById("dict-new");
 dictNew.querySelector("button").onclick = () => switchTab("dictation");
 // Called by the app whenever the Dictation tab's state changes.
-dictNew.hidden = !dictation || dictation.chosen;
+dictNew.hidden = !dictation || dictation.chosen || !!dictation.unavailable;
 window.merkwerkDictation = d => {
   dictation = d;
-  dictNew.hidden = d.chosen || tab === "dictation";
+  dictNew.hidden = d.chosen || !!d.unavailable || tab === "dictation";
   if (tab === "dictation") { renderList(); renderView(false); }
 };
 

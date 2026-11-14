@@ -195,6 +195,9 @@ pub fn ensure_models(cfg: &Config) -> Result<()> {
     ensure_model(&cfg.vad, VAD_URL)
 }
 
+/// Bytes downloaded and expected (0 when unknown) of the model file being downloaded, for the UI.
+pub static PROGRESS: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+
 /// Download one model file if it is missing.
 fn ensure_model(path: &Path, url: &str) -> Result<()> {
     if path.exists() {
@@ -204,11 +207,40 @@ fn ensure_model(path: &Path, url: &str) -> Result<()> {
     eprintln!("downloading {} ...", path.display());
     let tmp = path.with_extension("part");
     let mut resp = ureq::get(url).call()?;
+    let total = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok()?.parse().ok())
+        .unwrap_or(0);
     let mut reader = resp.body_mut().with_config().limit(u64::MAX).reader();
-    io::copy(&mut reader, &mut fs::File::create(&tmp)?)?;
+    let mut file = io::BufWriter::new(fs::File::create(&tmp)?);
+    let mut buf = vec![0u8; 1 << 20];
+    let mut done = 0u64;
+    let copied = (|| -> io::Result<()> {
+        loop {
+            let n = io::Read::read(&mut reader, &mut buf)?;
+            if n == 0 {
+                return io::Write::flush(&mut file);
+            }
+            io::Write::write_all(&mut file, &buf[..n])?;
+            done += n as u64;
+            *PROGRESS.lock().unwrap() = Some((done, total));
+        }
+    })();
+    *PROGRESS.lock().unwrap() = None;
+    copied?;
     fs::rename(&tmp, path)?;
     eprintln!("model ready");
     Ok(())
+}
+
+/// Download progress of the current model file in whole percent, if known.
+pub fn progress_percent() -> Option<u64> {
+    PROGRESS
+        .lock()
+        .unwrap()
+        .filter(|(_, total)| *total > 0)
+        .map(|(done, total)| done * 100 / total)
 }
 
 /// Whether an engine's model files and the shared VAD model are already downloaded.
