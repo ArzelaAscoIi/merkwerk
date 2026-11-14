@@ -194,6 +194,12 @@ fn menu(rows: &[Row]) -> (Menu, Vec<Action>) {
             Row::Label(label) => add(&MenuItem::new(label, false, None)),
             Row::Toggle(label) => add(&MenuItem::with_id(id(Action::Toggle), label, true, None)),
             Row::Ignore => add(&MenuItem::with_id(id(Action::Ignore), "Ignore this call", true, None)),
+            Row::Never(app) => add(&MenuItem::with_id(
+                id(Action::Pick(Pick::Never(app.clone()))),
+                format!("Never record {}", crate::notes::app_name(app)),
+                true,
+                None,
+            )),
             Row::Notes => add(&MenuItem::with_id(id(Action::Notes), "Open notes", true, None)),
             Row::Dictation(label) => add(&MenuItem::with_id(id(Action::Dictation), label, true, None)),
             Row::Open(label, path) => add(&MenuItem::with_id(id(Action::Open(path.clone())), label, true, None)),

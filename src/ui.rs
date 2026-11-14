@@ -50,6 +50,39 @@ static ANSWERS: Mutex<Vec<(u64, String)>> = Mutex::new(vec![]);
 /// Speech engine whose model is being downloaded.
 static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
 
+/// Download the selected engine's missing model files in the background, one download at a time;
+/// the menu shows "(downloading...)" meanwhile.
+pub fn download_models(cfg: Config) {
+    let engine = cfg.engine();
+    {
+        let mut downloading = DOWNLOADING.lock().unwrap();
+        if downloading.is_some() {
+            return;
+        }
+        *downloading = Some(engine);
+    }
+    std::thread::spawn(move || {
+        // Loop: the engine may be switched mid-download; a pick that found DOWNLOADING set relies
+        // on this thread. The installed check and clearing share the lock so no pick slips between.
+        loop {
+            {
+                let mut downloading = DOWNLOADING.lock().unwrap();
+                let engine = cfg.engine();
+                if crate::transcribe::installed(&cfg, &engine) {
+                    *downloading = None;
+                    return;
+                }
+                *downloading = Some(engine);
+            }
+            if let Err(e) = crate::transcribe::ensure_models(&cfg) {
+                eprintln!("model download: {e:#}");
+                *DOWNLOADING.lock().unwrap() = None;
+                return;
+            }
+        }
+    });
+}
+
 /// Speech engines offered in the menu: id and label.
 const ENGINES: [(&str, &str); 3] = [
     ("parakeet", "Parakeet v3 (25 languages, fastest)"),
@@ -67,6 +100,40 @@ enum Pick {
     Engine(String),
     Llm(String),
     Server(String),
+    Never(String),
+}
+
+/// "Never record <app>" (`record: false`) or its undo: moves the app's shown name ("Vivaldi
+/// Helper" -> "Vivaldi", covering all its helpers) between settings.json `ignore` and `allow`;
+/// `allow` also overrides the built-in defaults. Never also stops a running recording of the app.
+fn set_recorded(cfg: &Config, app: String, record: bool) {
+    let app = notes::app_name(&app);
+    if !record
+        && RECORDING
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|r| notes::app_name(&r.0).eq_ignore_ascii_case(&app))
+    {
+        STOP.store(true, Ordering::Relaxed);
+    }
+    let (add, remove) = if record {
+        ("allow", "ignore")
+    } else {
+        ("ignore", "allow")
+    };
+    for key in [remove, add] {
+        let mut apps: Vec<String> = crate::config::setting(&cfg.root, key)
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        apps.retain(|a| !a.eq_ignore_ascii_case(&app));
+        if key == add {
+            apps.push(app.clone());
+        }
+        if let Err(e) = crate::config::set_setting(&cfg.root, key, apps.into()) {
+            eprintln!("{key}: {e}");
+        }
+    }
 }
 
 /// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
@@ -159,6 +226,8 @@ enum Row {
     Toggle(String),
     /// Submenu of exclusive choices: label, selected, what picking it does.
     Choice(&'static str, Vec<(String, bool, Pick)>),
+    /// "Never record <app>": adds the app to settings.json `ignore`.
+    Never(String),
     Ignore,
     Auto(bool),
     Screen(bool),
@@ -197,6 +266,13 @@ fn entries(store: &Store) -> Vec<Row> {
     }));
     if pending.is_some() && recording.is_none() {
         rows.push(Row::Ignore);
+    }
+    // A hand-started recording is labelled "manual" (watch_loop): there is no app to exclude.
+    let app = pending
+        .clone()
+        .or_else(|| recording.as_ref().map(|r| r.0.clone()).filter(|a| a != "manual"));
+    if let Some(app) = app {
+        rows.push(Row::Never(app));
     }
     rows.push(Row::Auto(auto));
     rows.push(Row::Screen(SCREEN.load(Ordering::Relaxed)));
@@ -322,14 +398,8 @@ fn pick(pick: Pick) {
         Pick::Engine(engine) => {
             let _ = crate::config::set_setting(&cfg.root, "engine", engine.clone().into());
             if !crate::transcribe::installed(&cfg, &engine) {
-                // Download in the background; the next recording uses the new engine.
-                *DOWNLOADING.lock().unwrap() = Some(engine);
-                std::thread::spawn(move || {
-                    if let Err(e) = crate::transcribe::ensure_models(&cfg) {
-                        eprintln!("model download: {e:#}");
-                    }
-                    *DOWNLOADING.lock().unwrap() = None;
-                });
+                // The next recording uses the new engine.
+                download_models(cfg);
             }
         }
         Pick::Llm(model) => {
@@ -339,6 +409,7 @@ fn pick(pick: Pick) {
             let _ = crate::config::set_setting(&cfg.root, "llm_url", url.into());
             SERVER_MODELS.lock().unwrap().clear();
         }
+        Pick::Never(app) => set_recorded(&cfg, app, false),
     }
 }
 
@@ -406,6 +477,18 @@ fn handle_message(raw: &str) {
     let Some((cfg, store)) = store() else {
         return;
     };
+    // "Never record <app>" or "Record <app> again" from a meeting's app label; the app
+    // name comes from meta.json.
+    if req["action"] == "never" || req["action"] == "record" {
+        match store.load_editable(req["target"].as_str().unwrap_or_default()) {
+            Ok(meta) => meta
+                .app
+                .into_iter()
+                .for_each(|app| set_recorded(&cfg, app, req["action"] == "record")),
+            Err(e) => eprintln!("never record: {e:#}"),
+        }
+        return;
+    }
     // Tag edit: a small file write, done right here; the next refresh shows it everywhere.
     if let Some(tags) = req["tags"].as_array() {
         let tags: Vec<String> = tags.iter().filter_map(|t| Some(t.as_str()?.to_string())).collect();
@@ -470,10 +553,11 @@ fn notes_page(cfg: &Config, store: &Store) -> (String, u64) {
 /// answers); `shown` is the fingerprint of the data the page has. Called every tick.
 fn notes_updates(cfg: &Config, store: &Store, shown: &mut u64) -> Vec<String> {
     let mut js = vec![format!(
-        "window.merkwerkRecording({}); window.merkwerkScreenBlocked({}); window.merkwerkNotesServer({})",
+        "window.merkwerkRecording({}); window.merkwerkScreenBlocked({}); window.merkwerkNotesServer({}); window.merkwerkIgnored({})",
         RECORDING.lock().unwrap().is_some(),
         screen_blocked(),
-        serde_json::json!(*NOTES_PROBLEM.lock().unwrap())
+        serde_json::json!(*NOTES_PROBLEM.lock().unwrap()),
+        serde_json::json!(cfg.ignore())
     )];
     if SHOW_DICTATION.swap(false, Ordering::Relaxed) {
         js.push("switchTab(\"dictation\")".into());

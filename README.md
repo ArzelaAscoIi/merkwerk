@@ -60,7 +60,7 @@ Requirements: macOS 14.6 or newer, Apple Silicon recommended, the
 OpenAI-compatible endpoint works).
 
 ```sh
-cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.2
+cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.3
 merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD (1 MB)
 ollama pull gemma4      # the default notes model
 merkwerk install        # writes ~/Applications/merkwerk.app
@@ -264,6 +264,9 @@ live as plain lists in `~/merkwerk/context.md` (all meetings) and `context.md` i
   loopback for system audio.
 - **Echo** from your speakers reaching the mic is dropped from `me` when its words match `them`
   speech at the same time; the raw segments stay in `transcript.jsonl`.
+- **Muted in the call**: Meet, Teams web and Slack keep the microphone open while you are muted.
+  During a call recording merkwerk reads the call app's mute button through Accessibility once a
+  second; while it says muted (`Turn on microphone`, `Unmute…`), `me` is recorded as silence.
 - **Calendar**: after a meeting, the overlapping calendar event with other invitees (EventKit)
   supplies the title and the invited names, so notes can name owners. With exactly one other
   invitee, the `them` lines carry that person's first name. Any calendar macOS Calendar syncs
@@ -281,7 +284,7 @@ live as plain lists in `~/merkwerk/context.md` (all meetings) and `context.md` i
 
 ```
 ~/merkwerk/
-  settings.json                 recording mode, screen activity switch, model choices, ignore list
+  settings.json                 recording mode, screen activity switch, model choices, ignored apps
   vocab.txt                     optional: names and terms, one per line, for correct spelling in notes
   2026-10-16_100000/            one folder per meeting
     meta.json                   title, app, start, end, invitees, tags
@@ -322,10 +325,17 @@ override both, but only reach the app if set with `launchctl setenv`.
 | `MERKWERK_LLM_MODEL` | `gemma4` (also selectable in the menu) |
 | `MERKWERK_LLM_KEY` | unset (Bearer token for hosted APIs) |
 | `MERKWERK_ME` | first name of your macOS account (how notes refer to you) |
-| `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr` (apps whose mic use is not a call; also `"ignore"` in `settings.json`) |
+| `MERKWERK_IGNORE` | `merkwerk,screenpipe,openwhispr,handy` (apps whose mic use is not a call; **Never record** in the menu, or a click on a meeting's app name in the notes window, adds to `ignore` in `settings.json`; clicking a never-recorded app name again moves it to `allow`, which also overrides these defaults) |
 | `MERKWERK_SCREEN` | on (`0` turns screen activity off; also switchable in the menu) |
 | `MERKWERK_SCREEN_IGNORE` | unset (extra apps or windows never captured) |
 | `MERKWERK_DICTATE` | unset (dictation shortcut as names joined by `+`, e.g. `control+option` or `right_command`; normally recorded in the notes window) |
+
+Extra fields for a model's requests go in `settings.json`, keyed by the exact model name. They are
+sent with every notes, Ask and work log request and override the defaults (e.g. `temperature`):
+
+```json
+"llm_options": { "google/gemma-4-26b-a4b-qat": { "reasoning_effort": "none" } }
+```
 
 ## Limitations
 
@@ -338,6 +348,9 @@ override both, but only reach the app if set with `launchctl setenv`.
   microphone right away.
 - Apps that draw their content as pixels (some terminals, remote desktops, games) only show their
   window title in the activity log.
+- Mute detection reads English button labels and only sees the active tab of each Chrome window;
+  the Teams desktop app is not detected and Slack's huddle label is untested. If the state can't
+  be read, `me` is recorded normally.
 
 ## Contributing
 

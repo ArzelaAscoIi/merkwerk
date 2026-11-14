@@ -5,7 +5,7 @@
 //! clicking one opens its folder.
 
 use super::*;
-use crate::{config::Config, store::Store};
+use crate::{config::Config, notes, store::Store};
 use objc2::{
     MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
@@ -307,6 +307,16 @@ fn menu(mtm: MainThreadMarker, handler: &Handler, rows: &[Row]) -> Retained<NSMe
             Row::Ignore => unsafe {
                 add("Ignore this call", Some(sel!(ignore:)), ns_string!("")).setTarget(Some(handler))
             },
+            Row::Never(app) => {
+                let item = add(
+                    &format!("Never record {}", notes::app_name(app)),
+                    Some(sel!(pick:)),
+                    ns_string!(""),
+                );
+                unsafe { item.setTarget(Some(handler)) };
+                item.setTag(picks.len() as isize);
+                picks.push(Pick::Never(app.clone()));
+            }
             Row::Auto(on) => {
                 let item = add("Auto-record calls", Some(sel!(auto:)), ns_string!(""));
                 unsafe { item.setTarget(Some(handler)) };
@@ -412,6 +422,13 @@ fn refresh_notes(cfg: &Config, store: &Store) {
             if !window.isMiniaturized() {
                 *slot = None;
             }
+            return;
+        }
+        // The context menu's Reload blanks a page loaded from an HTML string: load it again.
+        if unsafe { !web.isLoading() && web.title().is_none_or(|t| t.length() == 0) } {
+            let (html, fingerprint) = notes_page(cfg, store);
+            unsafe { web.loadHTMLString_baseURL(&NSString::from_str(&html), None) };
+            *shown = fingerprint;
             return;
         }
         for js in notes_updates(cfg, store, shown) {

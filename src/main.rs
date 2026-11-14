@@ -136,7 +136,7 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
     let mut snoozed: Option<String> = None;
     let mut announced: Option<String> = None;
     loop {
-        let users = detect::mic_users(&cfg.ignore);
+        let users = detect::mic_users(&cfg.ignore());
         if snoozed.as_ref().is_some_and(|s| !users.contains(s)) {
             snoozed = None;
         }
@@ -171,7 +171,7 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
                 }
                 // Manual recordings run until stopped; calls end once their app lets go of the mic.
                 let Some(app) = &app else { return false };
-                if detect::mic_users(&cfg.ignore).contains(app) {
+                if detect::mic_users(&cfg.ignore()).contains(app) {
                     idle_since = None;
                     return false;
                 }
@@ -183,6 +183,8 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
                 Ok(rec) => rec,
                 Err(e) => {
                     eprintln!("recording failed: {e:#}");
+                    // Without the pause a call that can't be recorded is retried many times a second.
+                    thread::sleep(Duration::from_secs(2));
                     continue;
                 }
             };

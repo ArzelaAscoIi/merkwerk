@@ -116,6 +116,42 @@ pub fn mic_users(ignore: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// GUI app owning the process currently capturing the named microphone stream.
+pub fn call_app_pid(mic_user: &str) -> Option<i32> {
+    let pid = process_objects().into_iter().find_map(|obj| {
+        let running: u32 = get(obj, PROCESS_IS_RUNNING_INPUT)?;
+        if running == 0 {
+            return None;
+        }
+        let pid: i32 = get(obj, PROCESS_PID)?;
+        (process_name(pid) == mic_user).then_some(pid)
+    })?;
+    let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    if unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) } <= 0 {
+        return None;
+    }
+    let path = std::ffi::CStr::from_bytes_until_nul(&buf).ok()?.to_str().ok()?;
+    let mut bundle = std::path::PathBuf::new();
+    let mut found = false;
+    for component in std::path::Path::new(path).components() {
+        bundle.push(component);
+        if bundle.extension().is_some_and(|ext| ext == "app") {
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return None;
+    }
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .find_map(|app| {
+            let path = app.bundleURL()?.path()?.to_string();
+            (std::path::Path::new(&path) == bundle).then(|| app.processIdentifier())
+        })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

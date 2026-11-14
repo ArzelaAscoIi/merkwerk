@@ -80,7 +80,7 @@ impl Store {
     }
 
     /// Loads a meeting for an edit from the notes window.
-    fn load_editable(&self, id: &str) -> Result<Meta> {
+    pub fn load_editable(&self, id: &str) -> Result<Meta> {
         // The id comes from the web page: keep it a plain directory name.
         anyhow::ensure!(
             !id.is_empty() && !id.contains(['/', '\\']) && !id.starts_with('.'),

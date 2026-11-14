@@ -14,6 +14,11 @@ pub fn mic_users(ignore: &[String]) -> Vec<String> {
     names
 }
 
+/// The call app's process, for mute detection; only on macOS so far.
+pub fn call_app_pid(_mic_user: &str) -> Option<i32> {
+    None
+}
+
 #[cfg(windows)]
 fn users() -> Vec<String> {
     use winreg::{RegKey, enums::HKEY_CURRENT_USER};

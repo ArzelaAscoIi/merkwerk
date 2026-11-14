@@ -4,6 +4,7 @@ use crate::{
     audio::{self, RATE, Source, to_i16},
     calendar,
     config::Config,
+    detect, screen,
     store::{self, Meta, Store},
     summarize,
     transcribe::{CHUNK_SECS, Transcriber},
@@ -13,7 +14,11 @@ use hound::{WavReader, WavSpec, WavWriter};
 use std::{
     fs::{self, File},
     io::BufWriter,
-    sync::mpsc::{self, RecvTimeoutError, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError, Sender},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -31,13 +36,21 @@ type Chunk = (Source, f64, Vec<f32>);
 /// A finished capture whose transcription may still be catching up.
 pub struct Recording {
     pub meta: Meta,
-    worker: JoinHandle<()>,
+    /// true once every chunk went through the speech model; false if it could not be loaded.
+    worker: JoinHandle<bool>,
 }
 
 impl Recording {
     /// Wait for the last chunks to be transcribed, then write transcript.md and summary.md.
     pub fn finish(self, cfg: &Config, store: &Store) -> Result<()> {
-        let _ = self.worker.join();
+        let id = &self.meta.id;
+        // A panicked worker counts as untranscribed: redo the whole meeting from the wav files.
+        if !self.worker.join().unwrap_or(false) {
+            // finalize would delete the meeting for its empty transcript, so stop here if this fails too.
+            retranscribe(cfg, store, id).with_context(|| {
+                format!("{id}: audio kept, not transcribed; run `merkwerk model`, then `merkwerk transcribe {id}` and `merkwerk summarize {id}`")
+            })?;
+        }
         // The speech model (several hundred MB) was just dropped; hand the freed pages back to
         // the OS instead of letting the allocator keep them for the rest of the day.
         #[cfg(target_os = "macos")]
@@ -51,11 +64,12 @@ impl Recording {
         unsafe {
             libc::malloc_trim(0)
         };
-        finalize(cfg, store, &self.meta.id)
+        finalize(cfg, store, id)
     }
 }
 
-/// Record until `should_stop` (polled every 2s) returns true.
+/// Record until `should_stop` (polled every 2s) returns true. The speech model loads on the
+/// transcription thread, so the audio is saved even without it.
 pub fn record(
     cfg: &Config,
     store: &Store,
@@ -63,7 +77,6 @@ pub fn record(
     app: Option<String>,
     mut should_stop: impl FnMut() -> bool,
 ) -> Result<Recording> {
-    let mut transcriber = Transcriber::load(cfg)?;
     let (tx, rx) = mpsc::channel();
     let mut capture = audio::start(tx)?;
     let meta = store.create(title, app)?;
@@ -71,8 +84,17 @@ pub fn record(
 
     let (chunk_tx, chunk_rx) = mpsc::channel::<Chunk>();
     let worker = {
-        let (store, id) = (store.clone(), meta.id.clone());
+        let (cfg, store, id) = (cfg.clone(), store.clone(), meta.id.clone());
         thread::spawn(move || {
+            // Loaded here, not before capture: a missing model loses the live transcript, never the audio.
+            let mut transcriber = match Transcriber::load(&cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("transcribe: {e:#}");
+                    crate::ui::download_models(cfg);
+                    return false;
+                }
+            };
             for (source, offset, samples) in chunk_rx {
                 let res = transcriber
                     .run(source, offset, &samples)
@@ -81,10 +103,37 @@ pub fn record(
                     eprintln!("transcribe: {e:#}");
                 }
             }
+            true
         })
     };
 
-    let mut sink = Sink::new(store, &meta.id, chunk_tx)?;
+    let muted = Arc::new(AtomicBool::new(false));
+    if let Some(name) = meta.app.clone() {
+        // Weak: the poller stops once the sink is dropped, also when recording fails.
+        let flag = Arc::downgrade(&muted);
+        thread::spawn(move || {
+            let mut pid = None;
+            let mut previous = false;
+            while let Some(muted) = flag.upgrade() {
+                if pid.is_none() {
+                    pid = detect::call_app_pid(&name);
+                }
+                let now = pid.is_some_and(screen::mic_muted);
+                if now != previous {
+                    if now {
+                        eprintln!("mic muted in {name}: recording silence for me");
+                    } else {
+                        eprintln!("mic unmuted in {name}");
+                    }
+                    previous = now;
+                }
+                muted.store(now, Ordering::Relaxed);
+                drop(muted);
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+    let mut sink = Sink::new(store, &meta.id, chunk_tx, muted)?;
     let mut last_check = Instant::now();
     loop {
         match rx.recv_timeout(Duration::from_millis(500)) {
@@ -122,10 +171,11 @@ struct Sink {
     /// Samples already handed to the transcriber, per source; gives each chunk its time offset.
     sent: [usize; 2],
     chunk_tx: Sender<Chunk>,
+    muted: Arc<AtomicBool>,
 }
 
 impl Sink {
-    fn new(store: &Store, id: &str, chunk_tx: Sender<Chunk>) -> Result<Self> {
+    fn new(store: &Store, id: &str, chunk_tx: Sender<Chunk>, muted: Arc<AtomicBool>) -> Result<Self> {
         Ok(Sink {
             wavs: [
                 WavWriter::create(store.wav_path(id, Source::Me), WAV)?,
@@ -134,6 +184,7 @@ impl Sink {
             pending: Default::default(),
             sent: [0; 2],
             chunk_tx,
+            muted,
         })
     }
 
@@ -141,6 +192,10 @@ impl Sink {
         let i = source as usize;
         let from = self.pending[i].len();
         resampler.process(raw, &mut self.pending[i]);
+        // Silence before saving and chunking so muted speech never reaches the transcript.
+        if source == Source::Me && self.muted.load(Ordering::Relaxed) {
+            self.pending[i][from..].fill(0.0);
+        }
         for &s in &self.pending[i][from..] {
             self.wavs[i].write_sample(to_i16(s))?;
         }
@@ -274,6 +329,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn muted_mic_writes_silence_them_untouched() {
+        let root = std::env::temp_dir().join(format!("merkwerk-test-mute-{}", std::process::id()));
+        let store = Store { root };
+        let meta = store.create("t", None).unwrap();
+        let mut sink = Sink::new(&store, &meta.id, mpsc::channel().0, Arc::new(AtomicBool::new(true))).unwrap();
+        let mut resampler = audio::Resampler::new(RATE);
+        let samples = vec![0.5; 1600];
+        sink.push(&mut resampler, Source::Me, &samples).unwrap();
+        sink.push(&mut resampler, Source::Them, &samples).unwrap();
+        sink.finish().unwrap();
+
+        let me: Vec<i16> = WavReader::open(store.wav_path(&meta.id, Source::Me))
+            .unwrap()
+            .into_samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        let them: Vec<i16> = WavReader::open(store.wav_path(&meta.id, Source::Them))
+            .unwrap()
+            .into_samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        assert!(!me.is_empty());
+        assert!(me.iter().all(|&sample| sample == 0));
+        assert!(them.iter().any(|&sample| sample > 0));
+        fs::remove_dir_all(&store.root).unwrap();
+    }
+
+    #[test]
     fn cut_lands_in_the_pause_near_the_end() {
         let mut samples = vec![0.5f32; CHUNK + RATE as usize];
         let pause = CHUNK - 2 * RATE as usize; // 200 ms of silence, 2 s before the 30 s mark
@@ -284,5 +367,30 @@ mod tests {
             "cut at {n}, pause at {pause}"
         );
         assert!(n <= CHUNK);
+    }
+
+    #[test]
+    fn finish_keeps_the_meeting_when_the_model_is_missing() {
+        let root = std::env::temp_dir().join(format!("merkwerk-test-nomodel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let missing = root.join("models/missing");
+        let cfg = Config {
+            root: root.clone(),
+            parakeet: missing.clone(),
+            model: missing.clone(),
+            model_v2: missing.clone(),
+            vad: missing,
+            ..Config::from_env()
+        };
+        let store = Store { root: root.clone() };
+        let meta = store.create("t", None).unwrap();
+        let dir = store.dir(&meta.id);
+        let rec = Recording {
+            meta,
+            worker: thread::spawn(|| false),
+        };
+        assert!(rec.finish(&cfg, &store).is_err());
+        assert!(dir.exists(), "finalize deleted the untranscribed recording");
+        let _ = fs::remove_dir_all(root);
     }
 }

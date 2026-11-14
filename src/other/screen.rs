@@ -34,6 +34,11 @@ pub fn snapshot(_prepared: &mut std::collections::HashSet<i32>) -> Option<Snapsh
     })
 }
 
+/// Whether the call app shows its mic as muted; only read on macOS (Accessibility).
+pub fn mic_muted(_pid: i32) -> bool {
+    false
+}
+
 /// Case-insensitive fragment match against app name and window title.
 pub fn ignored(s: &Snapshot, ignore: &[String]) -> bool {
     let hay = format!("{} {}", s.app, s.window).to_lowercase();
