@@ -10,7 +10,10 @@
 </p>
 
 <p align="center">
-  <img src="assets/screenshot.png" width="860" alt="merkwerk notes window: meetings by day, a meeting with tags, next steps with owners and dates, decisions and topics">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark.png">
+    <img src="assets/screenshot.png" width="860" alt="merkwerk notes window: meetings by day, a meeting with tags, next steps with owners and dates, decisions and topics">
+  </picture>
 </p>
 
 ---
