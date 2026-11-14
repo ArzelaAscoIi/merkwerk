@@ -1,0 +1,46 @@
+name: Release binaries
+
+# Builds the Apple Silicon binary for a release in public CI and attaches it with a checksum
+# and a build attestation, so anyone can check that a download was built from this repository:
+#   gh attestation verify merkwerk-<tag>-aarch64-apple-darwin.tar.gz -R ArzelaAscoIi/merkwerk
+# The Homebrew tap (ArzelaAscoIi/homebrew-tap) picks up new releases from here.
+
+on:
+  release:
+    types: [published]
+  # Rerun for a tag that contains this workflow: gh workflow run release.yml --ref <tag>
+  # The build, its attestation and the dispatch all use that tag's commit.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  macos:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-15
+    env:
+      TAG: ${{ github.ref_name }}
+      MACOSX_DEPLOYMENT_TARGET: "14.6"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          asset="merkwerk-${TAG}-aarch64-apple-darwin.tar.gz"
+          tar -czf "$asset" -C target/release merkwerk
+          shasum -a 256 "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.ASSET }}
+      # No --clobber: the tap pins this archive's checksum, so a published archive never changes.
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256"

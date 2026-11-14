@@ -55,18 +55,28 @@ no usage limits, no cloud.
 
 ## Install
 
-Requirements: macOS 14.6 or newer, Apple Silicon recommended, the
-[Rust toolchain](https://rustup.rs), and Ollama or LM Studio for notes (optional; any
+Requirements: macOS 14.6 or newer, and Ollama or LM Studio for notes (optional; any
 OpenAI-compatible endpoint works).
 
+With [Homebrew](https://brew.sh) on Apple Silicon:
+
 ```sh
-cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.3
+brew install arzelaascoii/tap/merkwerk
 merkwerk model          # one-time download: Parakeet v3 (~670 MB) + Silero VAD (1 MB)
 ollama pull gemma4      # the default notes model
 merkwerk install        # writes ~/Applications/merkwerk.app
 open -a merkwerk        # opens the notes window and starts watching
 ```
-To build the latest `main` instead, clone the repository and run `cargo install --path .`. See
+
+The binary is built by this repository's [release workflow](.github/workflows/release.yml) in
+public GitHub Actions. Each release carries the archive, its SHA-256 and a build attestation;
+check that a download was built from this source with
+`gh attestation verify merkwerk-<tag>-aarch64-apple-darwin.tar.gz -R ArzelaAscoIi/merkwerk`.
+Update with `brew upgrade merkwerk`, then run `merkwerk install` again.
+
+To build it yourself instead (Intel Macs too), install the [Rust toolchain](https://rustup.rs) and
+replace the first line with `cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.3`,
+or clone the repository and run `cargo install --path .` for the latest `main`. See
 [releases](https://github.com/ArzelaAscoIi/merkwerk/releases) for what changed.
 
 With LM Studio, start its local server on port 1234 from the Developer tab or with `lms server start`, and load a model.
