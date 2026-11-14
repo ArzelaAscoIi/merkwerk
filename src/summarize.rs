@@ -147,7 +147,7 @@ pub fn explain(cfg: &Config, err: &anyhow::Error) -> String {
         }
         Some(ureq::Error::StatusCode(401 | 403)) => format!("{server} refused the request: check the API key."),
         Some(ureq::Error::StatusCode(code)) => format!("{server} failed to write with “{model}” (error {code})."),
-        Some(_) => format!("No notes model is running: {server} isn't reachable on this Mac."),
+        Some(_) => format!("No notes model is running: {server} isn't reachable on this computer."),
         None => format!("The notes model gave no usable answer ({err})."),
     }
 }

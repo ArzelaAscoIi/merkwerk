@@ -118,14 +118,19 @@ impl Store {
         m.ended_at.is_none() && recent(&self.wav_path(&m.id, Source::Me))
     }
 
-    /// Moves a meeting's directory to the macOS Trash, so a mistaken delete can be undone in Finder.
+    /// Moves a meeting's directory to the Trash / Recycle Bin, so a mistaken delete can be undone.
     pub fn trash(&self, id: &str) -> Result<()> {
         let meta = self.load_editable(id)?;
         anyhow::ensure!(!self.live(&meta), "{id} is still recording");
-        let url = objc2_foundation::NSURL::from_directory_path(self.dir(id)).context("meeting path")?;
-        objc2_foundation::NSFileManager::defaultManager()
-            .trashItemAtURL_resultingItemURL_error(&url, None)
-            .map_err(|e| anyhow::anyhow!("trash {id}: {}", e.localizedDescription()))
+        #[cfg(not(target_os = "macos"))]
+        return trash::delete(self.dir(id)).map_err(|e| anyhow::anyhow!("trash {id}: {e}"));
+        #[cfg(target_os = "macos")]
+        {
+            let url = objc2_foundation::NSURL::from_directory_path(self.dir(id)).context("meeting path")?;
+            objc2_foundation::NSFileManager::defaultManager()
+                .trashItemAtURL_resultingItemURL_error(&url, None)
+                .map_err(|e| anyhow::anyhow!("trash {id}: {}", e.localizedDescription()))
+        }
     }
 
     /// All meetings, newest first.

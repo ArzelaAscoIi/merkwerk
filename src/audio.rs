@@ -1,8 +1,12 @@
-//! Capture: microphone ("me") and system output via CoreAudio loopback ("them").
+//! Capture: microphone ("me") and system output ("them"): CoreAudio / WASAPI loopback through cpal,
+//! on Linux the PulseAudio / PipeWire monitor of the default output through `parec`.
 //! Both arrive as mono f32 at the device rate and are resampled to 16 kHz for whisper.
 
 use anyhow::{Context, Result, bail};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{
+    FromSample, SizedSample,
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc::Sender;
 
@@ -31,20 +35,65 @@ impl Source {
 
 /// Live capture. Dropping it stops both streams.
 pub struct Capture {
-    pub streams: Vec<cpal::Stream>,
+    /// cpal streams, and on Linux the `parec` process; dropping one stops it.
+    pub streams: Vec<Box<dyn std::any::Any>>,
     pub resamplers: [Resampler; 2],
 }
 
 pub fn start(tx: Sender<(Source, Vec<f32>)>) -> Result<Capture> {
-    let host = cpal::default_host();
-    let out = host.default_output_device().context("no output device")?;
     let (mic_stream, mic_rate) = open_mic(tx.clone())?;
-    // Building an input stream on an output device is cpal's loopback (macOS 14.6+).
-    let (out_stream, out_rate) = open(&out, out.default_output_config()?, Source::Them, tx)?;
+    let (out_stream, out_rate) = system_audio(tx)?;
     Ok(Capture {
-        streams: vec![mic_stream, out_stream],
+        streams: vec![Box::new(mic_stream), out_stream],
         resamplers: [Resampler::new(mic_rate), Resampler::new(out_rate)],
     })
+}
+
+/// Building an input stream on an output device is cpal's loopback (macOS 14.6+, WASAPI).
+#[cfg(not(target_os = "linux"))]
+fn system_audio(tx: Sender<(Source, Vec<f32>)>) -> Result<(Box<dyn std::any::Any>, u32)> {
+    let out = cpal::default_host()
+        .default_output_device()
+        .context("no output device")?;
+    let (stream, rate) = open(&out, out.default_output_config()?, Source::Them, tx)?;
+    Ok((Box::new(stream), rate))
+}
+
+/// ALSA has no loopback; record the default output's monitor through PulseAudio / pipewire-pulse.
+#[cfg(target_os = "linux")]
+fn system_audio(tx: Sender<(Source, Vec<f32>)>) -> Result<(Box<dyn std::any::Any>, u32)> {
+    use std::io::Read;
+    let mut child = std::process::Command::new("parec")
+        .args([
+            "--device=@DEFAULT_MONITOR@",
+            "--format=float32le",
+            "--channels=1",
+            "--latency-msec=100",
+        ])
+        .arg(format!("--rate={RATE}"))
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .context("parec (pulseaudio-utils) is needed to record the other side of calls")?;
+    let mut out = child.stdout.take().context("parec stdout")?;
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; RATE as usize / 10 * 4];
+        while out.read_exact(&mut buf).is_ok() {
+            let block: Vec<f32> = buf.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+            let peak = block.iter().fold(0f32, |m, x| m.max(x.abs()));
+            LEVEL.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            if tx.send((Source::Them, block)).is_err() {
+                break;
+            }
+        }
+    });
+    struct Parec(std::process::Child);
+    impl Drop for Parec {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    Ok((Box::new(Parec(child)), RATE))
 }
 
 /// The microphone alone (dictation), with its resampler to 16 kHz.
@@ -64,18 +113,33 @@ fn open(
     source: Source,
     tx: Sender<(Source, Vec<f32>)>,
 ) -> Result<(cpal::Stream, u32)> {
-    // Limitation: CoreAudio hands out f32; add conversions if another backend is ever needed.
-    if config.sample_format() != cpal::SampleFormat::F32 {
-        bail!("unsupported sample format {:?}", config.sample_format());
+    use cpal::SampleFormat as F;
+    match config.sample_format() {
+        F::F32 => open_as::<f32>(device, config, source, tx),
+        F::I16 => open_as::<i16>(device, config, source, tx),
+        F::I32 => open_as::<i32>(device, config, source, tx),
+        F::U16 => open_as::<u16>(device, config, source, tx),
+        f => bail!("unsupported sample format {f:?}"),
     }
+}
+
+fn open_as<T: SizedSample + Send + 'static>(
+    device: &cpal::Device,
+    config: cpal::SupportedStreamConfig,
+    source: Source,
+    tx: Sender<(Source, Vec<f32>)>,
+) -> Result<(cpal::Stream, u32)>
+where
+    f32: FromSample<T>,
+{
     let channels = config.channels() as usize;
     let rate = config.sample_rate();
     let stream = device.build_input_stream(
         config.into(),
-        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
             let mono: Vec<f32> = data
                 .chunks(channels)
-                .map(|f| f.iter().sum::<f32>() / channels as f32)
+                .map(|f| f.iter().map(|&x| <f32 as FromSample<T>>::from_sample_(x)).sum::<f32>() / channels as f32)
                 .collect();
             let peak = mono.iter().fold(0f32, |m: f32, x: &f32| m.max(x.abs()));
             LEVEL.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);

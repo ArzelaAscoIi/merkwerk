@@ -5,7 +5,7 @@
 <h1 align="center">merkwerk</h1>
 
 <p align="center">
-  <b>Your meetings and your workday, written down. Entirely on your Mac.</b><br>
+  <b>Your meetings and your workday, written down. Entirely on your computer.</b><br>
   Local transcription, meeting notes, a daily work log and an MCP server. In pure Rust.
 </p>
 
@@ -101,6 +101,36 @@ the first time ("merkwerk local signing"; macOS may ask once for your keychain p
 the signature stays the same, these permissions survive reinstalls. If the menu or the notes
 window says screen activity is paused, Accessibility is missing: the warning opens the right
 Settings page.
+
+### Windows and Linux (preview)
+
+merkwerk also runs on Windows 10/11 and on Linux (Ubuntu 24.04, Debian 13 or newer) as a tray app.
+Recording, transcription, notes, Ask, the work log and the MCP server work as on macOS. What is
+different:
+
+| | Windows | Linux |
+|---|---|---|
+| Other side of the call | system audio loopback (WASAPI) | monitor of the default output through `parec` (PulseAudio or PipeWire) |
+| Call detection | apps using the mic, from Windows privacy settings | recording streams from `pactl` |
+| Screen activity | app and window title only | app and window title on X11 (`xprop`), nothing on Wayland |
+| Dictation | hold Ctrl / Alt / Shift / Win, pastes with Ctrl+V | not yet |
+| Calendar | not yet | not yet |
+
+Linux build dependencies (Debian/Ubuntu):
+
+```sh
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  libasound2-dev libxdo-dev cmake clang pulseaudio-utils x11-utils
+```
+
+Windows needs the Visual Studio C++ build tools, CMake and LLVM (for whisper.cpp). Then, on
+both:
+
+```sh
+cargo install --git https://github.com/ArzelaAscoIi/merkwerk
+merkwerk model
+merkwerk                # tray icon + notes window
+```
 
 ## Notes model
 
