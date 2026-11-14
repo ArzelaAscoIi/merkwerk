@@ -8,11 +8,9 @@ name: Release binaries
 on:
   release:
     types: [published]
+  # Rerun for a tag that contains this workflow: gh workflow run release.yml --ref <tag>
+  # The build, its attestation and the dispatch all use that tag's commit.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing release tag to build, e.g. v0.0.3
-        required: true
 
 permissions:
   contents: write
@@ -21,14 +19,15 @@ permissions:
 
 jobs:
   macos:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: macos-15
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ github.ref_name }}
       MACOSX_DEPLOYMENT_TARGET: "14.6"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked
       - name: Package
@@ -40,7 +39,8 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: ${{ env.ASSET }}
+      # No --clobber: the tap pins this archive's checksum, so a published archive never changes.
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256"
