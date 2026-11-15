@@ -198,6 +198,11 @@ pub fn auto_record(root: &std::path::Path) -> bool {
     setting(root, "auto_record").and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
+/// Anonymous usage analytics (PostHog). Opt-in: off until the user turns it on in "Get started".
+pub fn analytics(root: &std::path::Path) -> bool {
+    setting(root, "analytics").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

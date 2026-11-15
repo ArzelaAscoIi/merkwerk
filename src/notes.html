@@ -712,6 +712,15 @@ function renderSetup() {
     el("p", null, "Say something. merkwerk plays a short tone and checks it hears both."));
   else step("3", "Test", ...result(t.me, "Your voice", t.fix_me), ...result(t.them, "Computer audio", t.fix_them),
     button(t.me && t.them ? "copy" : "act", "Test again", () => post({ action: "test_audio" })));
+  step("4", "Usage statistics",
+    button(setup.analytics ? "copy" : "act", setup.analytics ? "Turn off" : "Turn on", () => {
+      setup.analytics = !setup.analytics;
+      post({ action: "set_analytics", on: setup.analytics });
+      renderView(false);
+    }),
+    el("p", null, setup.analytics
+      ? "On: anonymous counts of recordings, notes and questions, plus app errors and model timing. Never meeting content, titles or names."
+      : "Off. Turn on to share anonymous counts of recordings, notes and questions, plus app errors and model timing. Never meeting content, titles or names."));
   view.append(steps);
 }
 

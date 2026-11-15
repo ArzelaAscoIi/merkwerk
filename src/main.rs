@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     // Finder may pass a process serial number (-psn_...) to apps it launches.
     let args: Vec<String> = env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
-    state.posthog.set(posthog::init(arg(0) == Some("mcp")));
+    state.posthog.set(posthog::init(arg(0) == Some("mcp"), config::analytics(&cfg.root)));
     let id = || arg(1).context("missing <id>");
     let result: Result<()> = (|| match arg(0) {
         // From a terminal on macOS: run as merkwerk.app, which can get the system audio permission.

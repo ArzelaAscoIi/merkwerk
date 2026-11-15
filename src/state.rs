@@ -56,7 +56,7 @@ impl<T: Clone> Shared<T> {
 }
 
 /// What the threads (watch loop, screen activity, dictation, background jobs, UI) share.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct AppState {
     // UI to watch loop: requests, consumed with `Flag::take`.
     pub start: Flag,

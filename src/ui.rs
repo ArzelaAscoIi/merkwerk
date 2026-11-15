@@ -367,6 +367,7 @@ fn setup_state(cfg: &Config) -> String {
             "no_ollama": ollama && !reachable,
             "pull": *state().model_pull.lock(),
         },
+        "analytics": crate::config::analytics(&cfg.root),
         "test": {
             "running": test.running,
             "me": test.me,
@@ -464,6 +465,15 @@ fn handle_message(raw: &str) {
         Some("summarize") => {
             if let (Some((cfg, store)), Some(id)) = (store(), req["target"].as_str()) {
                 write_notes(cfg, store, id.to_string());
+            }
+            return;
+        }
+        Some("set_analytics") => {
+            if let (Some((cfg, _)), Some(on)) = (store(), req["on"].as_bool()) {
+                let _ = crate::config::set_setting(&cfg.root, "analytics", on.into());
+                let old = state().posthog.get();
+                state().posthog.set(crate::posthog::init(false, on));
+                crate::posthog::shutdown(old);
             }
             return;
         }

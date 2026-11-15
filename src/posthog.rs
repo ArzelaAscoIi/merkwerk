@@ -28,10 +28,13 @@ fn runtime() -> &'static Runtime {
     })
 }
 
-/// Builds the one PostHog client for this process when both env vars are set.
+/// Builds the one PostHog client when the user opted in and both env vars are set.
 /// MCP runs always write configuration warnings to stderr because stdout carries
 /// the JSON-RPC protocol.
-pub fn init(is_mcp: bool) -> Option<Arc<Client>> {
+pub fn init(is_mcp: bool, enabled: bool) -> Option<Arc<Client>> {
+    if !enabled {
+        return None;
+    }
     let token = env::var("POSTHOG_PROJECT_TOKEN").ok().filter(|value| !value.trim().is_empty());
     let host = env::var("POSTHOG_HOST").ok().filter(|value| !value.trim().is_empty());
     let should_warn = cfg!(debug_assertions) || is_mcp;
