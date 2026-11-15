@@ -5,7 +5,7 @@
 <h1 align="center">merkwerk</h1>
 
 <p align="center">
-  <b>Meeting notes and a daily work log that never leave your computer.</b><br>
+  <b>Meeting notes and a daily work log that stay on your computer by default.</b><br>
   Local-first · private · open source · free. Transcription, notes, a work log and an MCP server, in pure Rust.
 </p>
 
