@@ -5,14 +5,14 @@
 <h1 align="center">merkwerk</h1>
 
 <p align="center">
-  <b>Your meetings and your workday, written down. Entirely on your computer.</b><br>
-  Local transcription, meeting notes, a daily work log and an MCP server. In pure Rust.
+  <b>Meeting notes and a daily work log that never leave your computer.</b><br>
+  Local-first · private · open source · free. Transcription, notes, a work log and an MCP server, in pure Rust.
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark.png">
-    <img src="assets/screenshot.png" width="860" alt="merkwerk notes window: meetings by day, a meeting with tags, next steps with owners and dates, decisions and topics">
+    <img src="assets/screenshot.png" width="860" alt="merkwerk notes window: meetings by day on the left; a spring event planning meeting with tags, next steps with owners and dates, decisions and topics">
   </picture>
 </p>
 
