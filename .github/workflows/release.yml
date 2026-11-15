@@ -3,7 +3,9 @@ name: Release binaries
 # Builds the Apple Silicon binary for a release in public CI and attaches it with a checksum
 # and a build attestation, so anyone can check that a download was built from this repository:
 #   gh attestation verify merkwerk-<tag>-aarch64-apple-darwin.tar.gz -R ArzelaAscoIi/merkwerk
-# The Homebrew tap (ArzelaAscoIi/homebrew-tap) picks up new releases from here.
+# After the upload it starts the Homebrew tap's update (ArzelaAscoIi/homebrew-tap), which points
+# the formula at this release. That needs the TAP_TOKEN secret: a fine-grained token with
+# Actions: read and write on ArzelaAscoIi/homebrew-tap only.
 
 on:
   release:
@@ -44,3 +46,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256"
+      - name: Update the Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: gh workflow run update.yml -R ArzelaAscoIi/homebrew-tap
