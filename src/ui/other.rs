@@ -4,7 +4,7 @@
 // and the overlay shows only its text; port the macOS details when someone misses them.
 
 use super::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tao::{
     dpi::{LogicalPosition, LogicalSize},
     event::{Event, StartCause, WindowEvent},

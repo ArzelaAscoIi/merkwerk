@@ -657,7 +657,7 @@ impl Pill {
     /// The dot breathes slowly and lights up with what the mic or system audio hears. Also expands
     /// the recording pill while the mouse is over it.
     fn level(&self) {
-        let peak = state().take_audio_level();
+        let peak = f32::from_bits(state().audio_level.swap(0, Ordering::Relaxed));
         let recording = state().recording.lock().is_some();
         let alpha = if recording {
             let breath = 0.45 + 0.2 * (self.born.elapsed().as_secs_f32() * std::f32::consts::PI).sin();
