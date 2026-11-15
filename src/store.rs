@@ -280,7 +280,10 @@ fn drop_echo(segs: Vec<Segment>) -> Vec<Segment> {
                 .filter(|(start, end, _)| *start <= s.end + SLACK && *end >= s.start - SLACK)
                 .flat_map(|(_, _, w)| w)
                 .collect();
-            let w = words(&s.text);
+            // Short words (I, will, the, and) occur in any reply; judge by the longer ones.
+            let all = words(&s.text);
+            let long: Vec<String> = all.iter().filter(|x| x.chars().count() > 3).cloned().collect();
+            let w = if long.is_empty() { all } else { long };
             let echoed = w.iter().filter(|x| near.contains(x)).count();
             w.is_empty() || echoed * 10 < w.len() * 6
         })
@@ -356,6 +359,23 @@ mod tests {
             end: start + 4.0,
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn keeps_a_reply_that_shares_only_small_words() {
+        let segs = vec![
+            seg(
+                Source::Them,
+                0.0,
+                "Sure, I will ask the hotel and send you the quote on Thursday.",
+            ),
+            seg(
+                Source::Me,
+                2.0,
+                "And I will send the guest list to the caterer on Friday.",
+            ),
+        ];
+        assert_eq!(drop_echo(segs).len(), 2);
     }
 
     #[test]
