@@ -813,13 +813,17 @@ impl Pill {
     }
 }
 
+/// Widest the dictation overlay grows; it shrinks to fit shorter text.
 const HUD_W: f64 = 460.0;
-const HUD_H: f64 = 44.0;
+const HUD_H: f64 = 36.0;
+/// Left edge of the text, right of the dot.
+const HUD_TEXT_X: f64 = 30.0;
 
 /// The dictation overlay at the bottom of the screen: Listening (with the mic level), Transcribing,
 /// then the dictated words for a few seconds.
 struct Hud {
     panel: Retained<NSPanel>,
+    background: Retained<NSBox>,
     dot: Retained<NSTextField>,
     label: Retained<NSTextField>,
     shown: RefCell<Option<crate::dictate::Overlay>>,
@@ -852,21 +856,18 @@ impl Hud {
         background.setBoxType(NSBoxType::Custom);
         background.setTitlePosition(NSTitlePosition::NoTitle);
         background.setBorderWidth(0.0);
-        background.setCornerRadius(14.0);
         background.setFillColor(&NSColor::colorWithWhite_alpha(0.09, 0.94));
+        background.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         root.addSubview(&background);
         let dot = NSTextField::labelWithString(ns_string!("●"), mtm);
-        dot.setFrame(NSRect::new(
-            NSPoint::new(12.0, (HUD_H - 16.0) / 2.0),
-            NSSize::new(16.0, 16.0),
-        ));
+        dot.setFont(Some(&NSFont::systemFontOfSize(10.0)));
+        dot.setAlignment(NSTextAlignment::Center);
         dot.setTextColor(Some(&NSColor::systemRedColor()));
         root.addSubview(&dot);
         let label = NSTextField::wrappingLabelWithString(ns_string!(""), mtm);
-        label.setFrame(NSRect::new(
-            NSPoint::new(34.0, 5.0),
-            NSSize::new(HUD_W - 48.0, HUD_H - 10.0),
-        ));
+        label.setPreferredMaxLayoutWidth(HUD_W - HUD_TEXT_X - 16.0);
         label.setTextColor(Some(&NSColor::colorWithWhite_alpha(0.95, 1.0)));
         label.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, unsafe {
             NSFontWeightMedium
@@ -877,6 +878,7 @@ impl Hud {
         panel.setContentView(Some(&root));
         Hud {
             panel,
+            background,
             dot,
             label,
             shown: RefCell::new(None),
@@ -914,15 +916,26 @@ impl Hud {
         self.dot.setTextColor(Some(&color));
         self.dot.setAlphaValue(1.0);
         self.label.setStringValue(&NSString::from_str(&text));
-        if !self.panel.isVisible()
-            && let Some(screen) = NSScreen::mainScreen(mtm)
-        {
+        // Fit the pill to the text and center the dot and the text vertically.
+        let max = HUD_W - HUD_TEXT_X - 16.0;
+        let fit = self.label.sizeThatFits(NSSize::new(max, 1000.0));
+        let (tw, th) = (fit.width.ceil().min(max), fit.height.ceil());
+        let (w, h) = (HUD_TEXT_X + tw + 16.0, (th + 18.0).max(HUD_H));
+        self.label.setFrame(NSRect::new(
+            NSPoint::new(HUD_TEXT_X, ((h - th) / 2.0).round()),
+            NSSize::new(tw, th),
+        ));
+        let d = self.dot.sizeThatFits(NSSize::new(100.0, 100.0));
+        self.dot.setFrame(NSRect::new(
+            NSPoint::new(12.0, ((h - d.height) / 2.0).round()),
+            NSSize::new(12.0, d.height.ceil()),
+        ));
+        self.background.setCornerRadius(if h > HUD_H { 14.0 } else { h / 2.0 });
+        if let Some(screen) = NSScreen::mainScreen(mtm) {
             let f = screen.visibleFrame();
-            let x = f.origin.x + (f.size.width - HUD_W) / 2.0;
-            self.panel.setFrame_display(
-                NSRect::new(NSPoint::new(x, f.origin.y + 60.0), NSSize::new(HUD_W, HUD_H)),
-                false,
-            );
+            let x = (f.origin.x + (f.size.width - w) / 2.0).round();
+            self.panel
+                .setFrame_display(NSRect::new(NSPoint::new(x, f.origin.y + 60.0), NSSize::new(w, h)), true);
         }
         self.panel.orderFrontRegardless();
         *self.shown.borrow_mut() = Some(now);
