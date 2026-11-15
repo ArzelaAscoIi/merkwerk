@@ -54,7 +54,7 @@ pub fn in_app_bundle() -> bool {
     env::current_exe().is_ok_and(|p| p.to_string_lossy().contains(".app/Contents/MacOS/"))
 }
 
-/// `merkwerk` in a terminal: installs merkwerk.app (or updates it after `brew upgrade`), then opens
+/// `merkwerk` in a terminal: installs merkwerk.app (or updates it with a newer binary), then opens
 /// it. A running app on an older version is left alone; quitting it would cut off a recording.
 pub fn start_app() -> Result<()> {
     use std::process::Command;
