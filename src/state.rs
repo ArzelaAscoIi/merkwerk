@@ -114,11 +114,6 @@ impl AppState {
         Arc::default()
     }
 
-    /// Loudest audio sample since the last call (0.0 when silent).
-    pub fn take_audio_level(&self) -> f32 {
-        f32::from_bits(self.audio_level.swap(0, Ordering::Relaxed))
-    }
-
     /// Download progress of the current model file in whole percent, if known.
     pub fn download_percent(&self) -> Option<u64> {
         self.download_progress
