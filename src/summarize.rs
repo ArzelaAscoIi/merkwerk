@@ -1,8 +1,9 @@
 //! Meeting notes from a transcript via any OpenAI-compatible chat endpoint.
 
-use crate::{config::Config, store::Meta};
+use crate::{config::Config, posthog, store::Meta};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::{sync::Arc, time::Instant};
 
 const PROMPT: &str = "You write meeting notes from a raw transcript.
 
@@ -59,6 +60,18 @@ Meeting date: {DATE}{ATTENDEES}{VOCAB}{CONTEXT}";
 // Limitation: whole transcript in one request; add map-reduce over chunks if transcripts outgrow the model context.
 /// `context`: the user's corrections ([`crate::store::Store::context_prompt`]), empty if none.
 pub fn summarize(cfg: &Config, meta: &Meta, transcript: &str, context: &str) -> Result<String> {
+    summarize_with_posthog(cfg, meta, transcript, context, None)
+}
+
+/// Summary generation for the desktop/CLI application. The MCP process calls
+/// [`summarize`] instead and remains deliberately uninstrumented.
+pub fn summarize_with_posthog(
+    cfg: &Config,
+    meta: &Meta,
+    transcript: &str,
+    context: &str,
+    client: Option<Arc<posthog_rs::Client>>,
+) -> Result<String> {
     let vocab = cfg
         .vocab
         .as_ref()
@@ -72,7 +85,8 @@ pub fn summarize(cfg: &Config, meta: &Meta, transcript: &str, context: &str) -> 
     let date = chrono::DateTime::parse_from_rfc3339(&meta.started_at)
         .map(|t| t.format("%A, %Y-%m-%d").to_string())
         .unwrap_or_else(|_| meta.started_at.clone());
-    let notes = chat(
+    let session_id = format!("meeting-{}", meta.id);
+    let notes = chat_with_posthog(
         cfg,
         &PROMPT
             .replace("{ME}", &cfg.me)
@@ -81,6 +95,9 @@ pub fn summarize(cfg: &Config, meta: &Meta, transcript: &str, context: &str) -> 
             .replace("{VOCAB}", &vocab)
             .replace("{CONTEXT}", context),
         transcript,
+        client,
+        Some(&session_id),
+        "meeting_notes",
     )?;
     Ok(tidy(&notes))
 }
@@ -154,12 +171,28 @@ pub fn explain(cfg: &Config, err: &anyhow::Error) -> String {
 
 /// One system + user turn against the configured OpenAI-compatible endpoint.
 pub fn chat(cfg: &Config, system: &str, user: &str) -> Result<String> {
-    chat_messages(
+    chat_with_posthog(cfg, system, user, None, None, "chat_completion")
+}
+
+/// App-only chat capture. The optional client keeps existing non-app callers,
+/// including the separately run MCP server, behaviorally unchanged.
+pub fn chat_with_posthog(
+    cfg: &Config,
+    system: &str,
+    user: &str,
+    client: Option<Arc<posthog_rs::Client>>,
+    session_id: Option<&str>,
+    span_name: &str,
+) -> Result<String> {
+    chat_messages_with_posthog(
         cfg,
         json!([
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]),
+        client,
+        session_id,
+        span_name,
     )
 }
 
@@ -178,23 +211,107 @@ fn request(cfg: &Config, model: &str, messages: Value) -> Value {
 
 /// A full message list (system, user, assistant, ...) against the configured endpoint.
 pub fn chat_messages(cfg: &Config, messages: Value) -> Result<String> {
-    let body = request(cfg, &cfg.llm_model(), messages);
+    chat_messages_with_posthog(cfg, messages, None, None, "chat_completion")
+}
+
+/// Sends the existing HTTP request, then best-effort captures its generation.
+pub fn chat_messages_with_posthog(
+    cfg: &Config,
+    messages: Value,
+    client: Option<Arc<posthog_rs::Client>>,
+    session_id: Option<&str>,
+    span_name: &str,
+) -> Result<String> {
+    let model = cfg.llm_model();
+    let body = request(cfg, &model, messages);
     let url = cfg.llm_url();
+    let provider = provider(&url);
+    let started = Instant::now();
     let mut req = ureq::post(&url);
     if let Some(key) = &cfg.llm_key {
         req = req.header("Authorization", &format!("Bearer {key}"));
     }
-    let resp: Value = req
-        .send_json(body)
-        .with_context(|| format!("calling {url}"))?
-        .body_mut()
-        .read_json()?;
-    let text = resp["choices"][0]["message"]["content"]
-        .as_str()
-        .context("no content in LLM response")?;
-    // A reply of only `---` or blank headings counts as empty too.
-    anyhow::ensure!(text.chars().any(char::is_alphanumeric), "empty LLM response");
-    Ok(text.trim().to_string() + "\n")
+    let response = (|| -> Result<Value> {
+        Ok(req
+            .send_json(body)
+            .with_context(|| format!("calling {url}"))?
+            .body_mut()
+            .read_json()?)
+    })();
+    match response {
+        Ok(resp) => {
+            let input_tokens = resp["usage"]["prompt_tokens"]
+                .as_u64()
+                .or_else(|| resp["usage"]["input_tokens"].as_u64());
+            let output_tokens = resp["usage"]["completion_tokens"]
+                .as_u64()
+                .or_else(|| resp["usage"]["output_tokens"].as_u64());
+            let result = (|| -> Result<String> {
+                let text = resp["choices"][0]["message"]["content"]
+                    .as_str()
+                    .context("no content in LLM response")?;
+                // A reply of only `---` or blank headings counts as empty too.
+                anyhow::ensure!(text.chars().any(char::is_alphanumeric), "empty LLM response");
+                Ok(text.trim().to_string() + "\n")
+            })();
+            match result {
+                Ok(output) => {
+                    posthog::capture_ai_generation(
+                        client,
+                        session_id,
+                        span_name,
+                        &model,
+                        provider,
+                        input_tokens,
+                        output_tokens,
+                        started.elapsed(),
+                        false,
+                    );
+                    Ok(output)
+                }
+                Err(error) => {
+                    posthog::capture_ai_generation(
+                        client,
+                        session_id,
+                        span_name,
+                        &model,
+                        provider,
+                        input_tokens,
+                        output_tokens,
+                        started.elapsed(),
+                        true,
+                    );
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            posthog::capture_ai_generation(
+                client,
+                session_id,
+                span_name,
+                &model,
+                provider,
+                None,
+                None,
+                started.elapsed(),
+                true,
+            );
+            Err(error)
+        }
+    }
+}
+
+/// The configured endpoints use the OpenAI chat-completions protocol. Preserve
+/// known local providers; unknown custom endpoints are reported truthfully.
+fn provider(url: &str) -> &str {
+    if url.contains("localhost:11434") {
+        "ollama"
+    } else if url.contains("localhost:1234") {
+        "lmstudio"
+    } else {
+        "openai-compatible"
+    }
 }
 
 /// The first `# ` heading: the title line the prompt asks for.

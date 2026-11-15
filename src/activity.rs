@@ -111,10 +111,10 @@ fn day_file(cfg: &Config, day: NaiveDate, ext: &str) -> PathBuf {
 
 /// Capture loop for `merkwerk watch`; never returns. Writes yesterday's work log after midnight.
 pub fn run(cfg: &Config, store: &Store, state: &AppState) {
-    let (c, s) = (cfg.clone(), store.clone());
+    let (c, s, posthog) = (cfg.clone(), store.clone(), state.posthog.get());
     // The notes server may not be up yet right after login; retry hourly until every day has a log.
     thread::spawn(move || {
-        while !backfill(&c, &s) {
+        while !backfill(&c, &s, posthog.clone()) {
             thread::sleep(Duration::from_secs(3600));
         }
     });
@@ -138,9 +138,9 @@ pub fn run(cfg: &Config, store: &Store, state: &AppState) {
         thread::sleep(TICK);
         let now = Local::now();
         if now.date_naive() != today {
-            let (cfg, store, day) = (cfg.clone(), store.clone(), today);
+            let (cfg, store, day, posthog) = (cfg.clone(), store.clone(), today, state.posthog.get());
             thread::spawn(move || {
-                if let Err(e) = write_work_log(&cfg, &store, day) {
+                if let Err(e) = write_work_log_with_posthog(&cfg, &store, day, posthog) {
                     eprintln!("work log {day}: {e:#}");
                 }
             });
@@ -363,7 +363,11 @@ Group by project, not by app. Skip entertainment and idle noise. Omit empty sect
 
 /// Writes the work log of every past day that has activity but no log, e.g. when merkwerk wasn't
 /// running at midnight. True when none failed.
-fn backfill(cfg: &Config, store: &Store) -> bool {
+fn backfill(
+    cfg: &Config,
+    store: &Store,
+    client: Option<std::sync::Arc<posthog_rs::Client>>,
+) -> bool {
     let today = Local::now().date_naive();
     let Ok(dir) = fs::read_dir(dir(&cfg.root)) else {
         return true;
@@ -376,7 +380,7 @@ fn backfill(cfg: &Config, store: &Store) -> bool {
     days.sort();
     let mut ok = true;
     for day in days {
-        if let Err(e) = write_work_log(cfg, store, day) {
+        if let Err(e) = write_work_log_with_posthog(cfg, store, day, client.clone()) {
             eprintln!("work log {day}: {e:#}");
             ok = false;
         }
@@ -386,6 +390,16 @@ fn backfill(cfg: &Config, store: &Store) -> bool {
 
 /// Writes and returns `activity/<day>.md` from the day's screen activity and meeting notes.
 pub fn write_work_log(cfg: &Config, store: &Store, day: NaiveDate) -> Result<String> {
+    write_work_log_with_posthog(cfg, store, day, None)
+}
+
+/// App-only work-log generation that reuses the shared PostHog client.
+pub fn write_work_log_with_posthog(
+    cfg: &Config,
+    store: &Store,
+    day: NaiveDate,
+    client: Option<std::sync::Arc<posthog_rs::Client>>,
+) -> Result<String> {
     let mut input = digest(cfg, day, 400);
     // Limitation: one request; a very busy day can exceed small context windows. Chunk by hour if so.
     const MAX_INPUT: usize = 120_000;
@@ -397,13 +411,17 @@ pub fn write_work_log(cfg: &Config, store: &Store, day: NaiveDate) -> Result<Str
         input += &format!("\n## Meeting {} ({})\n", m.title, m.id.get(11..15).unwrap_or(""));
         input += &store.read(&m.id, "summary.md").unwrap_or_default();
     }
-    let log = summarize::chat(
+    let session_id = format!("work-log-{day}");
+    let log = summarize::chat_with_posthog(
         cfg,
         &(WORK_LOG_PROMPT
             .replace("{ME}", &cfg.me)
             .replace("{DAY}", &day.format("%A, %Y-%m-%d").to_string())
             + &store.context_prompt(None)),
         &input,
+        client,
+        Some(&session_id),
+        "work_log",
     )
     .context("writing work log")?;
     fs::create_dir_all(dir(&cfg.root))?;

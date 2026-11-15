@@ -44,6 +44,16 @@ pub struct Recording {
 impl Recording {
     /// Wait for the last chunks to be transcribed, then write transcript.md and summary.md.
     pub fn finish(self, cfg: &Config, store: &Store) -> Result<()> {
+        self.finish_with_posthog(cfg, store, None)
+    }
+
+    /// App-only finalization that reuses the process-wide PostHog client.
+    pub fn finish_with_posthog(
+        self,
+        cfg: &Config,
+        store: &Store,
+        client: Option<Arc<posthog_rs::Client>>,
+    ) -> Result<()> {
         let id = &self.meta.id;
         // A panicked worker counts as untranscribed: redo the whole meeting from the wav files.
         if !self.worker.join().unwrap_or(false) {
@@ -65,7 +75,7 @@ impl Recording {
         unsafe {
             libc::malloc_trim(0)
         };
-        finalize(cfg, store, id)
+        finalize_with_posthog(cfg, store, id, client)
     }
 }
 
@@ -278,6 +288,16 @@ fn cut(samples: &[f32]) -> usize {
 pub const NOTES_ERROR: &str = "notes_error.txt";
 
 pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
+    finalize_with_posthog(cfg, store, id, None)
+}
+
+/// App-only finalization that carries the shared client to the existing LLM call.
+pub fn finalize_with_posthog(
+    cfg: &Config,
+    store: &Store,
+    id: &str,
+    client: Option<Arc<posthog_rs::Client>>,
+) -> Result<()> {
     // Nothing was said (a misclick, or a call that never got going): don't keep it.
     if store.transcript(id).trim().is_empty() {
         eprintln!("{id}: empty transcript, deleted");
@@ -304,7 +324,13 @@ pub fn finalize(cfg: &Config, store: &Store, id: &str) -> Result<()> {
     store.write(id, "transcript.md", &transcript)?;
     // Without a notes model the recording and transcript stay; the notes window says why and
     // offers to write the notes later.
-    let summary = match summarize::summarize(cfg, &meta, &transcript, &store.context_prompt(Some(id))) {
+    let summary = match summarize::summarize_with_posthog(
+        cfg,
+        &meta,
+        &transcript,
+        &store.context_prompt(Some(id)),
+        client,
+    ) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("{id}: no notes: {e:#}");

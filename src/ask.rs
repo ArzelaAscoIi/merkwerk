@@ -26,6 +26,18 @@ pub fn answer(
     history: &[(String, String)],
     question: &str,
 ) -> Result<String> {
+    answer_with_posthog(cfg, store, target, history, question, None)
+}
+
+/// App-only answer generation that reuses the process-wide PostHog client.
+pub fn answer_with_posthog(
+    cfg: &Config,
+    store: &Store,
+    target: &str,
+    history: &[(String, String)],
+    question: &str,
+    client: Option<std::sync::Arc<posthog_rs::Client>>,
+) -> Result<String> {
     // A day's log takes the global corrections, a meeting its own as well.
     let corrections = store.context_prompt(target.strip_suffix("_log").is_none().then_some(target));
     let (prompt, context) = match target.strip_suffix("_log") {
@@ -68,5 +80,12 @@ pub fn answer(
     // Small models drift into other languages from a system-prompt rule; pinning it to the
     // question itself keeps English questions in English and German ones in German.
     messages.push(json!({"role": "user", "content": format!("{question}\n\n(Reply in the language this question is written in.)")}));
-    summarize::chat_messages(cfg, Value::Array(messages))
+    let session_id = format!("conversation-{target}");
+    summarize::chat_messages_with_posthog(
+        cfg,
+        Value::Array(messages),
+        client,
+        Some(&session_id),
+        "answer_question",
+    )
 }

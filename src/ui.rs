@@ -115,8 +115,12 @@ fn write_notes(cfg: Config, store: Store, id: String) {
     }
     finishing.push(id.clone());
     std::thread::spawn(move || {
-        if let Err(e) = crate::session::finalize(&cfg, &store, &id) {
-            eprintln!("notes for {id}: {e:#}");
+        match crate::session::finalize_with_posthog(&cfg, &store, &id, state().posthog.get()) {
+            Ok(()) if store.read(&id, "summary.md").is_some() => {
+                crate::posthog::capture(state().posthog.get(), "meeting_notes_generated");
+            }
+            Ok(()) => {}
+            Err(e) => eprintln!("notes for {id}: {e:#}"),
         }
         state().finishing.lock().retain(|f| *f != id);
     });
@@ -543,14 +547,27 @@ fn handle_message(raw: &str) {
             .unwrap_or_default();
         let target = req["target"].as_str().unwrap_or_default();
         let question = req["question"].as_str().unwrap_or_default();
-        let answer = crate::ask::answer(&cfg, &store, target, &history, question).unwrap_or_else(|e| {
-            eprintln!("ask: {e:#}");
-            format!(
-                "{} [How to set up a notes model]({})",
-                crate::summarize::explain(&cfg, &e),
-                crate::summarize::SETUP_URL
-            )
-        });
+        let answer = match crate::ask::answer_with_posthog(
+            &cfg,
+            &store,
+            target,
+            &history,
+            question,
+            state().posthog.get(),
+        ) {
+            Ok(answer) => {
+                crate::posthog::capture(state().posthog.get(), "meeting_question_answered");
+                answer
+            }
+            Err(e) => {
+                eprintln!("ask: {e:#}");
+                format!(
+                    "{} [How to set up a notes model]({})",
+                    crate::summarize::explain(&cfg, &e),
+                    crate::summarize::SETUP_URL
+                )
+            }
+        };
         let html = crate::notes::markdown(&answer);
         state()
             .answers

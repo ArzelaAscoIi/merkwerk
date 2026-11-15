@@ -10,6 +10,7 @@ mod dictate;
 mod mcp;
 mod models;
 mod notes;
+mod posthog;
 #[cfg_attr(not(target_os = "macos"), path = "other/screen.rs")]
 mod screen;
 mod session;
@@ -67,8 +68,9 @@ fn main() -> Result<()> {
     // Finder may pass a process serial number (-psn_...) to apps it launches.
     let args: Vec<String> = env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
+    state.posthog.set(posthog::init(arg(0) == Some("mcp")));
     let id = || arg(1).context("missing <id>");
-    match arg(0) {
+    let result: Result<()> = (|| match arg(0) {
         // From a terminal on macOS: run as merkwerk.app, which can get the system audio permission.
         #[cfg(target_os = "macos")]
         None if io::IsTerminal::is_terminal(&io::stderr()) && !in_app_bundle() => start_app(),
@@ -91,9 +93,16 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("transcribe") => session::retranscribe(&cfg, &store, id()?),
-        Some("summarize") => session::finalize(&cfg, &store, id()?),
+        Some("summarize") => {
+            let meeting_id = id()?;
+            session::finalize_with_posthog(&cfg, &store, meeting_id, state.posthog.get())?;
+            if store.read(meeting_id, "summary.md").is_some() {
+                posthog::capture(state.posthog.get(), "meeting_notes_generated");
+            }
+            Ok(())
+        }
         Some("mcp") => mcp::serve(&cfg, &store),
-        Some("notes") => ui::run_notes(cfg.clone(), store, state),
+        Some("notes") => ui::run_notes(cfg.clone(), store.clone(), state.clone()),
         Some("activity") => {
             print!("{}", activity::digest(&cfg, day(arg(1))?, 200));
             Ok(())
@@ -104,11 +113,15 @@ fn main() -> Result<()> {
                 .map(|q| q.join(" "))
                 .filter(|q| !q.is_empty())
                 .context("usage: merkwerk ask <id> <question>")?;
-            println!("{}", ask::answer(&cfg, &store, id()?, &[], &question)?);
+            let answer = ask::answer_with_posthog(&cfg, &store, id()?, &[], &question, state.posthog.get())?;
+            posthog::capture(state.posthog.get(), "meeting_question_answered");
+            println!("{answer}");
             Ok(())
         }
         Some("day") => {
-            println!("{}", activity::write_work_log(&cfg, &store, day(arg(1))?)?);
+            let log = activity::write_work_log_with_posthog(&cfg, &store, day(arg(1))?, state.posthog.get())?;
+            posthog::capture(state.posthog.get(), "work_log_generated");
+            println!("{log}");
             Ok(())
         }
         Some("model") => transcribe::ensure_models(&cfg, &state),
@@ -133,7 +146,14 @@ fn main() -> Result<()> {
             eprintln!("{USAGE}");
             Ok(())
         }
+    })();
+    if arg(0) != Some("mcp") {
+        if let Err(error) = &result {
+            posthog::capture_exception(state.posthog.get(), error.as_ref());
+        }
     }
+    posthog::shutdown(state.posthog.get());
+    result
 }
 
 fn watch(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> {
@@ -190,6 +210,7 @@ fn watch_loop(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> 
             eprintln!("recording: {label}");
             state.stop.set(false);
             state.recording.set(Some((label, Instant::now())));
+            posthog::capture(state.posthog.get(), "meeting_recording_started");
             let mut idle_since: Option<Instant> = None;
             let rec = session::record(cfg, store, state, store::UNTITLED, app.clone(), || {
                 if state.stop.take() {
@@ -221,8 +242,15 @@ fn watch_loop(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> 
             let id = rec.meta.id.clone();
             state.finishing.lock().push(id.clone());
             thread::spawn(move || {
-                if let Err(e) = rec.finish(&cfg, &store) {
-                    eprintln!("finish: {e:#}");
+                match rec.finish_with_posthog(&cfg, &store, st.posthog.get()) {
+                    Ok(()) if store.load(&id).is_ok() => {
+                        posthog::capture(st.posthog.get(), "meeting_recording_completed");
+                        if store.read(&id, "summary.md").is_some() {
+                            posthog::capture(st.posthog.get(), "meeting_notes_generated");
+                        }
+                    }
+                    Ok(()) => {}
+                    Err(e) => eprintln!("finish: {e:#}"),
                 }
                 st.finishing.lock().retain(|f| *f != id);
             });
@@ -404,9 +432,18 @@ fn record(cfg: &Config, store: &Store, state: &Arc<AppState>, title: &str) -> Re
         flag.store(true, Ordering::Relaxed);
     });
     eprintln!("press Enter to stop");
+    posthog::capture(state.posthog.get(), "meeting_recording_started");
     let rec = session::record(cfg, store, state, title, None, || stop.load(Ordering::Relaxed))?;
+    let meeting_id = rec.meta.id.clone();
     eprintln!("stopped, finishing transcription ...");
-    rec.finish(cfg, store)
+    rec.finish_with_posthog(cfg, store, state.posthog.get())?;
+    if store.load(&meeting_id).is_ok() {
+        posthog::capture(state.posthog.get(), "meeting_recording_completed");
+        if store.read(&meeting_id, "summary.md").is_some() {
+            posthog::capture(state.posthog.get(), "meeting_notes_generated");
+        }
+    }
+    Ok(())
 }
 
 fn duration(m: &store::Meta) -> String {

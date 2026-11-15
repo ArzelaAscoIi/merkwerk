@@ -81,6 +81,8 @@ pub struct AppState {
     pub download_progress: Shared<Option<(u64, u64)>>,
     /// Loudest sample since the UI last looked, as f32 bits (non-negative floats order like their bits).
     pub audio_level: Arc<AtomicU32>,
+    /// Optional process-wide PostHog client, initialized once at startup.
+    pub posthog: Shared<Option<Arc<posthog_rs::Client>>>,
 
     // Dictation.
     /// The shortcut: these keys held together. Empty = off.
