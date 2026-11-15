@@ -5,7 +5,7 @@
 
 use crate::{
     config::Config,
-    screen::{self, Snapshot},
+    platform::screen::{self, Snapshot},
     state::AppState,
     store::Store,
     summarize,
