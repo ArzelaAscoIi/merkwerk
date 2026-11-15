@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>merkwerk</title>
 <style>
-  /* Same paper, ink and mint as the merkwerk website: mono labels, one hard shadow on the record button. */
+  /* Same paper, ink and mint as the merkwerk website, but quieter: the system font for UI, mono only for times, code and keys, one ink button. */
   :root {
     color-scheme: light dark;
     --bg: #fdfcf9;
@@ -74,12 +74,12 @@
   .search { padding: 14px 16px 10px; }
   #rec {
     display: flex; align-items: center; justify-content: center; gap: 9px;
-    width: calc(100% - 36px); margin: 18px 20px 4px 16px; font: 500 13px var(--mono);
+    width: calc(100% - 36px); margin: 18px 20px 4px 16px; font: 500 13px var(--sans);
     color: var(--on-btn); background: var(--btn); border: 0; padding: 10px 12px; cursor: default;
-    box-shadow: 3px 3px 0 var(--mint); border-radius: 0;
+    border-radius: 6px;
   }
   #rec::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
-  #rec:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--mint); }
+  #rec:active { transform: translateY(1px); }
   #rec.on { background: var(--rec); color: var(--on-accent); box-shadow: none; }
   #rec.on::before { background: currentColor; border-radius: 0; }
   #rec[hidden] { display: none; }
@@ -87,16 +87,15 @@
   .note { margin: 12px 16px 0; padding: 10px 12px; font-size: 13px; border: 1px solid var(--edge); border-radius: 4px; background: var(--bg); }
   .note button { display: block; margin-top: 8px; }
   .note[hidden] { display: none; }
-  #dict-new { border-color: var(--accent); }
-  #blocked { border-color: var(--rec); }
-  #notes-off { border-color: #d08a1c; }
+  .note .act { background: none; color: var(--text); border: 1px solid var(--edge); }
+  .note .act:hover { border-color: var(--ink); }
   /* Get started already covers these */
   body.setup #dict-new, body.setup #notes-off { display: none; }
   .steps { list-style: none; padding: 0; margin: 32px 0 0; display: grid; gap: 0; border-top: 1px solid var(--ink); }
   .steps li { display: grid; grid-template-columns: 44px 1fr; padding: 20px 0; border-bottom: 1px dashed var(--line); }
   .steps li > * { grid-column: 2; }
   .steps h2 { font-size: 15px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 10px; display: contents; }
-  .steps .n { grid-column: 1; grid-row: 1 / span 3; font: 500 13px/1.7 var(--mono); color: var(--muted); }
+  .steps .n { grid-column: 1; grid-row: 1 / span 3; font: 500 13px/1.7 var(--sans); color: var(--muted); }
   .steps h2 + * { margin-top: 10px; }
   .steps p { margin: 8px 0 0; color: var(--muted); font-size: 13px; max-width: 62ch; }
   .steps button { width: fit-content; margin-top: 10px; }
@@ -109,7 +108,7 @@
   @keyframes pulse { 50% { opacity: .45; } }
   .err { color: var(--rec) !important; }
   .act {
-    font: 500 12.5px var(--mono); color: var(--on-btn); background: var(--btn); border: 0; padding: 6px 12px; cursor: default;
+    font: 500 12.5px var(--sans); color: var(--on-btn); background: var(--btn); border: 0; padding: 6px 12px; cursor: default;
     width: fit-content;
   }
   .act:active { transform: translate(1px, 1px); }
@@ -131,7 +130,7 @@
   input[type=search]::placeholder { color: var(--muted); }
   input[type=search]:focus { border-color: var(--ink); }
   nav { overflow-y: auto; padding: 0 12px 24px 8px; flex: 1; }
-  .day { display: flex; align-items: center; gap: 10px; color: var(--muted); font: 11.5px var(--mono); padding: 18px 4px 6px 8px; }
+  .day { display: flex; align-items: center; gap: 10px; color: var(--muted); font: 11.5px var(--sans); padding: 18px 4px 6px 8px; }
   .day::after { content: ""; flex: 1; border-top: 1px solid color-mix(in srgb, var(--ink) 18%, transparent); }
   .row {
     display: block; width: 100%; text-align: left; border: 1px solid transparent; background: none; color: inherit;
@@ -140,7 +139,7 @@
   .row:hover { background: var(--hover); }
   .row[aria-current=true] { background: var(--bg); border-color: var(--edge); }
   .row .t { display: block; font-weight: 550; letter-spacing: -.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .row .m { display: block; color: var(--muted); font: 11.5px/1.6 var(--mono); }
+  .row .m { display: block; color: var(--muted); font: 11.5px/1.6 var(--sans); }
   .row .m.live { color: var(--rec); }
   .parts > span + span { margin-left: 10px; }
   .meta.parts > span + span { margin-left: 14px; }
@@ -161,7 +160,7 @@
     color: var(--text); background: var(--bg); width: 100%; box-sizing: border-box;
     border: 0; border-bottom: 2px solid var(--ink); border-radius: 0; padding: 0; outline: none;
   }
-  .meta { display: block; color: var(--muted); font: 12.5px/1.6 var(--mono); }
+  .meta { display: block; color: var(--muted); font: 12.5px/1.6 var(--sans); }
   h1.title + span.meta:not(.parts) { font: 14px/1.55 var(--sans); max-width: 62ch; }
   .rec { color: var(--rec); font-weight: 500; }
   .meta button.app {
@@ -173,7 +172,7 @@
   .rec::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--rec); margin-right: 6px; vertical-align: 1px; }
   .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
   .tag {
-    display: inline-flex; align-items: center; gap: 2px; font: 12px var(--mono); color: var(--text);
+    display: inline-flex; align-items: center; gap: 2px; font: 12px var(--sans); color: var(--text);
     border: 1px solid var(--edge); border-radius: 4px; padding: 0 2px 0 8px;
   }
   .tag button, .tags .add {
@@ -181,23 +180,22 @@
     width: 20px; height: 20px; padding: 0; line-height: 20px;
   }
   .tag button:hover, .tags .add:hover { color: var(--text); background: var(--hover); }
-  .tags .add { border: 1px dashed var(--edge); font: 14px var(--mono); width: 22px; height: 22px; line-height: 20px; }
+  .tags .add { border: 1px dashed var(--edge); font: 14px var(--sans); width: 22px; height: 22px; line-height: 20px; }
   .tags input {
-    font: 12px var(--mono); color: var(--text); background: var(--bg); width: 120px; height: 22px;
+    font: 12px var(--sans); color: var(--text); background: var(--bg); width: 120px; height: 22px;
     border: 1px solid var(--ink); padding: 0 8px; outline: none;
   }
 
-  .seg { display: inline-grid; grid-auto-flow: column; border: 1px solid var(--edge); border-radius: 4px; overflow: hidden; background: var(--bg); }
+  .seg { display: inline-grid; grid-auto-flow: column; border-radius: 6px; overflow: hidden; background: var(--hover); padding: 2px; gap: 2px; }
   .seg button {
-    font: 12.5px var(--mono); color: var(--muted); background: none; border: 0;
+    font: 12.5px var(--sans); color: var(--muted); background: none; border: 0;
     padding: 5px 12px; cursor: default; border-radius: 0;
   }
-  .seg button + button { border-left: 1px solid var(--edge); }
   .seg button:hover { color: var(--text); }
-  .seg button[aria-pressed=true] { background: var(--btn); color: var(--on-btn); }
+  .seg button[aria-pressed=true] { background: var(--bg); color: var(--text); font-weight: 600; border-radius: 4px; }
   .tools { display: flex; gap: 8px; align-items: center; }
   .copy {
-    font: 12.5px var(--mono); color: var(--muted); background: none; cursor: default;
+    font: 12.5px var(--sans); color: var(--muted); background: none; cursor: default;
     border: 1px solid var(--edge); padding: 5px 12px;
   }
   .copy:hover { color: var(--text); border-color: var(--ink); }
@@ -222,7 +220,7 @@
   .notes ul > li::before { content: "–"; position: absolute; left: 0; color: var(--faint); }
   .notes ol { padding-left: 22px; list-style: decimal; }
   .notes ol li { margin: 4px 0; }
-  .notes li::marker { color: var(--muted); font: 13px var(--mono); }
+  .notes li::marker { color: var(--muted); font: 13px var(--sans); }
   .notes li > ul { margin: 2px 0 4px; }
   .notes strong { font-weight: 650; }
   .notes code { font: 13px var(--mono); background: var(--side); padding: 1px 5px; }
@@ -233,7 +231,7 @@
   .notes .next > li { padding: 11px 0; margin: 0; border-bottom: 1px dashed color-mix(in srgb, var(--ink) 30%, transparent); }
   .notes .next > li::before { content: none; }
   .notes .next .step { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; }
-  .notes .next .who { flex: none; font: 12px var(--mono); color: var(--muted); }
+  .notes .next .who { flex: none; font: 12px var(--sans); color: var(--muted); }
   .notes .next li p { margin: 2px 0 0; color: var(--muted); }
   .notes .next li p:first-child { margin: 0; color: var(--text); }
   .notes .next li > ul { margin: 2px 0 0; color: var(--muted); }
@@ -243,7 +241,7 @@
   /* transcript */
   .tx { display: grid; grid-template-columns: 64px minmax(56px, max-content) 1fr; column-gap: 12px; row-gap: 10px; font-size: 14px; line-height: 1.55; }
   .tx .ts { font: 12px/1.9 var(--mono); color: var(--faint); }
-  .tx .sp { font: 500 12.5px/1.75 var(--mono); color: var(--muted); }
+  .tx .sp { font: 500 12.5px/1.75 var(--sans); color: var(--muted); }
   .tx .sp.me { color: var(--accent); }
   .tx .gap { grid-column: 1 / -1; height: 6px; }
 
@@ -256,7 +254,7 @@
   .chat .a.pending { color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .chips button {
-    font: 12.5px var(--mono); color: var(--text); background: none;
+    font: 12.5px var(--sans); color: var(--text); background: none;
     border: 1px solid var(--edge); padding: 4px 10px; cursor: default;
   }
   .chips button:hover { background: var(--hl); }
@@ -267,7 +265,7 @@
     border: 0; border-radius: 0; padding: 9px 12px; outline: none;
   }
   .ask button {
-    font: 500 13px var(--mono); color: var(--on-btn); background: var(--btn); border: 0;
+    font: 500 13px var(--sans); color: var(--on-btn); background: var(--btn); border: 0;
     padding: 0 18px; cursor: default; border-radius: 0;
   }
   .ask button:disabled { opacity: 0.5; }
