@@ -2,9 +2,8 @@
 
 use crate::{
     audio::{self, RATE, Source, to_i16},
-    calendar,
     config::Config,
-    detect, screen,
+    platform::{calendar, detect, screen},
     state::AppState,
     store::{self, Meta, Store},
     summarize,
@@ -52,19 +51,8 @@ impl Recording {
                 format!("{id}: audio kept, not transcribed; run `merkwerk model`, then `merkwerk transcribe {id}` and `merkwerk summarize {id}`")
             })?;
         }
-        // The speech model (several hundred MB) was just dropped; hand the freed pages back to
-        // the OS instead of letting the allocator keep them for the rest of the day.
-        #[cfg(target_os = "macos")]
-        {
-            unsafe extern "C" {
-                fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
-            }
-            unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) }; // all zones, as much as possible
-        }
-        #[cfg(target_os = "linux")]
-        unsafe {
-            libc::malloc_trim(0)
-        };
+        // The speech model (several hundred MB) was just dropped.
+        crate::platform::system::release_memory();
         finalize(cfg, store, id)
     }
 }

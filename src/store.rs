@@ -122,15 +122,7 @@ impl Store {
     pub fn trash(&self, id: &str) -> Result<()> {
         let meta = self.load_editable(id)?;
         anyhow::ensure!(!self.live(&meta), "{id} is still recording");
-        #[cfg(not(target_os = "macos"))]
-        return trash::delete(self.dir(id)).map_err(|e| anyhow::anyhow!("trash {id}: {e}"));
-        #[cfg(target_os = "macos")]
-        {
-            let url = objc2_foundation::NSURL::from_directory_path(self.dir(id)).context("meeting path")?;
-            objc2_foundation::NSFileManager::defaultManager()
-                .trashItemAtURL_resultingItemURL_error(&url, None)
-                .map_err(|e| anyhow::anyhow!("trash {id}: {}", e.localizedDescription()))
-        }
+        crate::platform::system::trash(&self.dir(id)).with_context(|| format!("trash {id}"))
     }
 
     /// All meetings, newest first.

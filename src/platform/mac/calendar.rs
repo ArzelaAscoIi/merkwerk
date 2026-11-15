@@ -18,7 +18,7 @@ pub struct Event {
 pub fn event_at(start: f64, end: f64) -> Option<Event> {
     match unsafe { EKEventStore::authorizationStatusForEntityType(EKEntityType::Event) } {
         EKAuthorizationStatus::FullAccess => {}
-        EKAuthorizationStatus::NotDetermined if crate::in_app_bundle() => {
+        EKAuthorizationStatus::NotDetermined if super::bundle::in_app_bundle() => {
             let (tx, rx) = mpsc::channel();
             let done = RcBlock::new(move |granted: Bool, _: *mut NSError| {
                 let _ = tx.send(granted.as_bool());

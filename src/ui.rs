@@ -15,7 +15,6 @@ use crate::{config::Config, notes, state::AppState, store::Store};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, OnceLock},
 };
 
@@ -205,7 +204,7 @@ const ACCESSIBILITY_SETTINGS: &str = "x-apple.systempreferences:com.apple.prefer
 /// Screen activity is on but macOS hasn't granted Accessibility (e.g. after a reinstall changed the
 /// signature): nothing is recorded until it is.
 fn screen_blocked() -> bool {
-    state().screen.is_set() && !crate::screen::trusted(false)
+    state().screen.is_set() && !crate::platform::screen::trusted(false)
 }
 
 fn entries(store: &Store) -> Vec<Row> {
@@ -376,15 +375,8 @@ fn setup_state(cfg: &Config) -> String {
     .replace('<', "\\u003c")
 }
 
-/// Opens a folder, file or URL with the system's default handler.
 fn open(target: impl AsRef<Path>) {
-    #[cfg(target_os = "macos")]
-    let mut cmd = Command::new("open");
-    #[cfg(windows)]
-    let mut cmd = Command::new("explorer");
-    #[cfg(target_os = "linux")]
-    let mut cmd = Command::new("xdg-open");
-    let _ = cmd.arg(target.as_ref()).spawn();
+    crate::platform::system::open(target.as_ref());
 }
 
 /// A choice from one of the Speech model / Notes server / Notes model submenus.

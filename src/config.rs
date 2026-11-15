@@ -66,10 +66,11 @@ impl Config {
             model,
             lang: var("MERKWERK_LANG").unwrap_or_else(|| "en,de".into()),
             llm_key: var("MERKWERK_LLM_KEY"),
-            me: var("MERKWERK_ME").unwrap_or_else(first_name),
+            me: var("MERKWERK_ME")
+                .unwrap_or_else(|| crate::platform::system::account_first_name().unwrap_or_else(|| "me".into())),
             screen_ignore: list(&format!(
                 "{},{}",
-                crate::screen::DEFAULT_IGNORE,
+                crate::platform::screen::DEFAULT_IGNORE,
                 var("MERKWERK_SCREEN_IGNORE").unwrap_or_default()
             )),
             root,
@@ -92,26 +93,6 @@ pub fn home() -> PathBuf {
             .or_else(|| env::var_os("USERPROFILE"))
             .expect("HOME not set"),
     )
-}
-
-/// First name from the account, e.g. "Kristof"; the login name outside macOS.
-#[cfg(not(target_os = "macos"))]
-fn first_name() -> String {
-    env::var("USER")
-        .or_else(|_| env::var("USERNAME"))
-        .unwrap_or_else(|_| "me".into())
-}
-
-/// First name from the macOS account, e.g. "Kristof".
-#[cfg(target_os = "macos")]
-fn first_name() -> String {
-    std::process::Command::new("id")
-        .arg("-F")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|n| n.split_whitespace().next().map(str::to_string))
-        .unwrap_or_else(|| "me".into())
 }
 
 impl Config {
