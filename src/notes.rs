@@ -4,6 +4,7 @@
 use crate::{
     activity,
     config::Config,
+    state::AppState,
     store::{Meta, Store},
 };
 use chrono::{DateTime, FixedOffset, Local};
@@ -14,7 +15,7 @@ const TEMPLATE: &str = include_str!("notes.html");
 
 /// Cheap change detector for the page data: sizes and modification times of the files it is
 /// built from (one `stat` each, no reads).
-pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
+pub fn fingerprint(cfg: &Config, store: &Store, state: &AppState) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let mut add = |path: &std::path::Path| {
@@ -57,7 +58,7 @@ pub fn fingerprint(cfg: &Config, store: &Store) -> u64 {
         .map(|d| d.as_secs() / 60);
     minute.hash(&mut h);
     live.hash(&mut h);
-    crate::ui::FINISHING.lock().unwrap().hash(&mut h);
+    state.finishing.lock().hash(&mut h);
     // "Today" and "Yesterday" labels change at midnight.
     Local::now().date_naive().hash(&mut h);
     h.finish()
@@ -68,19 +69,15 @@ pub fn page(data: &str, dictation: &str) -> String {
     TEMPLATE.replace("/*DATA*/", data).replace("/*DICTATION*/", dictation)
 }
 
-/// Each meeting's JSON, keyed by the sizes and mtimes of its files, its live flag and the day:
-/// during a recording only the meeting being recorded is rebuilt.
-static MEETINGS: std::sync::Mutex<Option<std::collections::HashMap<String, (u64, Value)>>> =
-    std::sync::Mutex::new(None);
-
 /// All meetings as JSON, safe to embed in a `<script>` tag.
 // ponytail: the whole array is still serialized and sent to the page on each change; send only
 // the changed meeting if the archive grows to thousands.
-pub fn data(cfg: &Config, store: &Store) -> String {
+pub fn data(cfg: &Config, store: &Store, state: &AppState) -> String {
     use std::hash::{Hash, Hasher};
     let today = Local::now().date_naive();
-    let mut cache = MEETINGS.lock().unwrap();
-    let cache = cache.get_or_insert_with(Default::default);
+    // Each meeting's JSON is cached under a hash of its files, live flag and the day, so during a
+    // recording only the meeting being recorded is rebuilt.
+    let mut cache = state.meeting_cache.lock();
     let mut meetings: Vec<Value> = store
         .list()
         .iter()
@@ -95,12 +92,12 @@ pub fn data(cfg: &Config, store: &Store) -> String {
                 let md = std::fs::metadata(store.dir(&m.id).join(file)).ok();
                 md.as_ref().map(|md| (md.len(), md.modified().ok())).hash(&mut h);
             }
-            (store.live(m), writing(&m.id), today).hash(&mut h);
+            (store.live(m), writing(state, &m.id), today).hash(&mut h);
             let key = h.finish();
             match cache.get(&m.id) {
                 Some((k, v)) if *k == key => v.clone(),
                 _ => {
-                    let v = meeting(store, m, today);
+                    let v = meeting(store, state, m, today);
                     cache.insert(m.id.clone(), (key, v.clone()));
                     v
                 }
@@ -114,7 +111,7 @@ pub fn data(cfg: &Config, store: &Store) -> String {
     Value::Array(meetings).to_string().replace('<', "\\u003c")
 }
 
-fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
+fn meeting(store: &Store, state: &AppState, m: &Meta, today: chrono::NaiveDate) -> Value {
     let parse = |s: &str| DateTime::parse_from_rfc3339(s).ok();
     let start = parse(&m.started_at);
     let end = m.ended_at.as_deref().and_then(parse);
@@ -157,7 +154,7 @@ fn meeting(store: &Store, m: &Meta, today: chrono::NaiveDate) -> Value {
         "app": m.app.as_deref().map(app_name),
         "tags": m.tags,
         "live": store.live(m),
-        "writing": writing(&m.id),
+        "writing": writing(state, &m.id),
         "notes_error": store.read(&m.id, crate::session::NOTES_ERROR),
         "notes": (!summary.trim().is_empty()).then(|| render(&summary)),
         "lines": lines,
@@ -237,8 +234,8 @@ fn day_label(start: DateTime<FixedOffset>, today: chrono::NaiveDate) -> String {
 }
 
 /// Whether this app is still transcribing / summarizing the meeting.
-fn writing(id: &str) -> bool {
-    crate::ui::FINISHING.lock().unwrap().iter().any(|f| f == id)
+fn writing(state: &AppState, id: &str) -> bool {
+    state.finishing.lock().iter().any(|f| f == id)
 }
 
 /// "Vivaldi Helper" -> "Vivaldi", "zoom.us" stays.
@@ -285,15 +282,16 @@ mod tests {
         let store = Store { root: root.clone() };
         let mut cfg = Config::from_env();
         cfg.root = root.clone();
+        let state = AppState::default();
         let m = store.create("Sync", None).unwrap();
         store
             .write(&m.id, "summary.md", "# Sync\n\n# Topic\n- first\n")
             .unwrap();
-        assert!(data(&cfg, &store).contains("first"));
+        assert!(data(&cfg, &store, &state).contains("first"));
         store
             .write(&m.id, "summary.md", "# Sync\n\n# Topic\n- second, longer\n")
             .unwrap();
-        let after = data(&cfg, &store);
+        let after = data(&cfg, &store, &state);
         assert!(after.contains("second") && !after.contains("first"), "{after}");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -306,9 +304,13 @@ mod preview {
     fn write_preview() {
         let cfg = crate::config::Config::from_env();
         let store = crate::store::Store { root: cfg.root.clone() };
+        let state = crate::state::AppState::default();
         std::fs::write(
             std::env::var("OUT").unwrap(),
-            super::page(&super::data(&cfg, &store), &crate::dictate::page_state(&cfg)),
+            super::page(
+                &super::data(&cfg, &store, &state),
+                &crate::dictate::page_state(&cfg, &state),
+            ),
         )
         .unwrap();
     }

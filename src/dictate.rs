@@ -2,31 +2,28 @@
 //! Same local speech model as meetings, mic only. Each dictation's text is kept in
 //! `$MERKWERK_DIR/dictations.jsonl` for the history in the notes window; no audio is saved.
 
+use crate::state::AppState;
 use crate::{
     audio::{self, Source},
     config::Config,
     transcribe::Transcriber,
 };
 use std::{
-    sync::{Mutex, mpsc},
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
 use sys::{MODIFIERS, down, named, presses};
 
-/// The dictation shortcut: these keys held together. Empty = off.
-pub static SHORTCUT: Mutex<Vec<u16>> = Mutex::new(Vec::new());
-
 /// Recording a new shortcut from the notes window.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Capture {
+    #[default]
     Off,
     /// Waiting for the user to press and release their keys.
     Listening,
     Failed(String),
 }
-
-pub static CAPTURE: Mutex<Capture> = Mutex::new(Capture::Off);
 
 /// "⌃ ⌥", "Right ⌘"; empty for no shortcut.
 pub fn label(keys: &[u16]) -> String {
@@ -58,24 +55,24 @@ pub fn configured(cfg: &Config) -> Vec<u16> {
 }
 
 /// Sets and saves the shortcut (empty turns dictation off).
-pub fn set_shortcut(cfg: &Config, keys: Vec<u16>) {
+pub fn set_shortcut(cfg: &Config, state: &AppState, keys: Vec<u16>) {
     let _ = crate::config::set_setting(&cfg.root, "dictate_key", serde_json::json!(keys));
-    *SHORTCUT.lock().unwrap() = keys;
+    state.shortcut.set(keys);
 }
 
 /// Waits for the user to press and release a combination of modifier keys and saves it.
-fn capture(cfg: &Config) {
+fn capture(cfg: &Config, state: &AppState) {
     if let Some(why) = sys::UNAVAILABLE {
-        *CAPTURE.lock().unwrap() = Capture::Failed(why.into());
+        *state.capture.lock() = Capture::Failed(why.into());
         return;
     }
     let before = presses();
     let start = Instant::now();
     let mut seen: Vec<u16> = vec![];
-    while *CAPTURE.lock().unwrap() == Capture::Listening {
+    while *state.capture.lock() == Capture::Listening {
         thread::sleep(Duration::from_millis(10));
         if presses() != before {
-            *CAPTURE.lock().unwrap() = Capture::Failed(sys::ONLY_MODIFIERS.into());
+            *state.capture.lock() = Capture::Failed(sys::ONLY_MODIFIERS.into());
             return;
         }
         let held: Vec<u16> = MODIFIERS.iter().map(|m| m.0).filter(|k| down(*k)).collect();
@@ -85,20 +82,21 @@ fn capture(cfg: &Config) {
             }
         }
         if !seen.is_empty() && held.is_empty() {
-            set_shortcut(cfg, seen);
-            *CAPTURE.lock().unwrap() = Capture::Off;
+            set_shortcut(cfg, state, seen);
+            *state.capture.lock() = Capture::Off;
             return;
         }
         if seen.is_empty() && start.elapsed() > Duration::from_secs(15) {
-            *CAPTURE.lock().unwrap() = Capture::Off;
+            *state.capture.lock() = Capture::Off;
             return;
         }
     }
 }
 
 /// What the dictation overlay shows; the UI polls it.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Overlay {
+    #[default]
     Hidden,
     Listening,
     Transcribing,
@@ -106,15 +104,16 @@ pub enum Overlay {
     Said(String, Instant),
 }
 
-pub static OVERLAY: Mutex<Overlay> = Mutex::new(Overlay::Hidden);
-
-fn show(o: Overlay) {
-    *OVERLAY.lock().unwrap() = o;
+fn show(state: &AppState, o: Overlay) {
+    state.overlay.set(o);
 }
 
 /// Show `text` in the overlay for a few seconds.
-fn say(text: impl Into<String>) {
-    show(Overlay::Said(text.into(), Instant::now() + Duration::from_secs(4)));
+fn say(state: &AppState, text: impl Into<String>) {
+    show(
+        state,
+        Overlay::Said(text.into(), Instant::now() + Duration::from_secs(4)),
+    );
 }
 
 /// The speech model stays loaded this long after the last dictation, then is released.
@@ -136,7 +135,7 @@ fn wait(cond: impl Fn() -> bool) {
 
 /// Polls the dictation shortcut; runs forever on its own thread.
 // ponytail: 20 ms polling instead of an event tap; no run loop, no Input Monitoring grant.
-pub fn run(cfg: Config) {
+pub fn run(cfg: Config, state: Arc<AppState>) {
     let mut model: Option<(String, Transcriber)> = None;
     let mut last_used = Instant::now();
     loop {
@@ -144,11 +143,11 @@ pub fn run(cfg: Config) {
         if model.is_some() && last_used.elapsed() > KEEP_MODEL {
             model = None;
         }
-        if *CAPTURE.lock().unwrap() == Capture::Listening {
-            capture(&cfg);
+        if *state.capture.lock() == Capture::Listening {
+            capture(&cfg, &state);
             continue;
         }
-        let keys = SHORTCUT.lock().unwrap().clone();
+        let keys = state.shortcut.get();
         if !held(&keys) {
             continue;
         }
@@ -160,24 +159,24 @@ pub fn run(cfg: Config) {
             continue;
         }
         let (tx, rx) = mpsc::channel();
-        let (stream, mut resampler) = match audio::mic(tx) {
+        let (stream, mut resampler) = match audio::mic(tx, &state.audio_level) {
             Ok(mic) => mic,
             Err(e) => {
                 eprintln!("dictation mic: {e:#}");
-                say(format!("No microphone: {e}"));
+                say(&state, format!("No microphone: {e}"));
                 wait(|| held(&keys));
                 continue;
             }
         };
-        show(Overlay::Listening);
+        show(&state, Overlay::Listening);
         wait(|| held(&keys) && presses() == before);
         drop(stream);
         if presses() != before {
-            show(Overlay::Hidden);
+            show(&state, Overlay::Hidden);
             wait(|| held(&keys));
             continue;
         }
-        show(Overlay::Transcribing);
+        show(&state, Overlay::Transcribing);
         let mut samples = vec![];
         for (_, block) in rx.try_iter() {
             resampler.process(&block, &mut samples);
@@ -189,7 +188,7 @@ pub fn run(cfg: Config) {
                 Ok(t) => Some((engine, t)),
                 Err(e) => {
                     eprintln!("dictation model: {e:#}");
-                    say(format!("Speech model missing: {e}"));
+                    say(&state, format!("Speech model missing: {e}"));
                     continue;
                 }
             };
@@ -200,19 +199,22 @@ pub fn run(cfg: Config) {
             Ok(segments) => {
                 let text = join(segments.iter().map(|s| s.text.as_str()));
                 if text.is_empty() {
-                    say("Didn't catch that");
+                    say(&state, "Didn't catch that");
                     continue;
                 }
                 remember(&cfg, &text);
-                say(if sys::paste(&text) {
-                    text
-                } else {
-                    format!("Allow Accessibility to paste. Copy it from the notes window: {text}")
-                });
+                say(
+                    &state,
+                    if sys::paste(&text) {
+                        text
+                    } else {
+                        format!("Allow Accessibility to paste. Copy it from the notes window: {text}")
+                    },
+                );
             }
             Err(e) => {
                 eprintln!("dictation: {e:#}");
-                say(format!("Transcription failed: {e}"));
+                say(&state, format!("Transcription failed: {e}"));
             }
         }
     }
@@ -246,7 +248,7 @@ fn remember(cfg: &Config, text: &str) {
 /// allowed, whether a key was ever chosen, and the latest dictations (newest first).
 // ponytail: rereads the history file on every call (once a second while the window is open);
 // cache by mtime if it ever gets big. Only the last 200 are sent.
-pub fn page_state(cfg: &Config) -> String {
+pub fn page_state(cfg: &Config, state: &AppState) -> String {
     let history: Vec<serde_json::Value> = std::fs::read_to_string(history_file(cfg))
         .unwrap_or_default()
         .lines()
@@ -262,9 +264,9 @@ pub fn page_state(cfg: &Config) -> String {
             })
         })
         .collect();
-    let capture = CAPTURE.lock().unwrap().clone();
+    let capture = state.capture.get();
     serde_json::json!({
-        "shortcut": label(&SHORTCUT.lock().unwrap()),
+        "shortcut": label(&state.shortcut.lock()),
         "capturing": capture == Capture::Listening,
         "error": match capture { Capture::Failed(e) => Some(e), _ => None },
         "trusted": crate::screen::trusted(false),

@@ -66,7 +66,7 @@ define_class!(
         #[unsafe(method(dictation:))]
         fn dictation(&self, _item: &NSMenuItem) {
             open_notes(MainThreadMarker::from(self));
-            SHOW_DICTATION.store(true, Ordering::Relaxed);
+            state().show_dictation.set(true);
         }
 
         #[unsafe(method(pick:))]
@@ -79,7 +79,7 @@ define_class!(
 
         #[unsafe(method(ignore:))]
         fn ignore(&self, _sender: &NSObject) {
-            IGNORE.store(true, Ordering::Relaxed);
+            state().ignore.set(true);
         }
 
         #[unsafe(method(screen:))]
@@ -89,7 +89,7 @@ define_class!(
 
         #[unsafe(method(auto:))]
         fn auto(&self, _sender: &NSObject) {
-            set_auto(!AUTO.load(Ordering::Relaxed));
+            set_auto(!state().auto_record.is_set());
         }
 
         /// The pill's Always: turns auto-record on, which also records the call it is shown for.
@@ -101,13 +101,13 @@ define_class!(
         /// The pill's Stop: only ever stops, so a late second click can't start a new recording.
         #[unsafe(method(stop:))]
         fn stop(&self, _sender: &NSObject) {
-            STOP.store(true, Ordering::Relaxed);
+            state().stop.set(true);
         }
 
         /// The pill's Record: only ever starts, so a second click can't stop what the first started.
         #[unsafe(method(record:))]
         fn record(&self, _sender: &NSObject) {
-            START.store(true, Ordering::Relaxed);
+            state().start.set(true);
         }
 
         #[unsafe(method(toggle:))]
@@ -166,7 +166,7 @@ define_class!(
 );
 
 /// Run the menu bar on the main thread. Never returns.
-pub fn run(cfg: Config, store: Store) -> ! {
+pub fn run(cfg: Config, store: Store, shared: Arc<AppState>) -> ! {
     let mtm = MainThreadMarker::new().expect("ui must run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -175,7 +175,7 @@ pub fn run(cfg: Config, store: Store) -> ! {
 
     app.setMainMenu(Some(&main_menu(mtm)));
     set_icon(mtm, &app);
-    set_store(&cfg, &store);
+    set_store(&cfg, &store, &shared);
     watch_models(&cfg);
     open_notes(mtm);
 
@@ -345,13 +345,13 @@ fn menu(mtm: MainThreadMarker, handler: &Handler, rows: &[Row]) -> Retained<NSMe
 }
 
 /// Just the notes window, as its own app (`merkwerk notes`); exits when the window closes.
-pub fn run_notes(cfg: Config, store: Store) -> ! {
+pub fn run_notes(cfg: Config, store: Store, shared: Arc<AppState>) -> ! {
     let mtm = MainThreadMarker::new().expect("ui must run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     app.setMainMenu(Some(&main_menu(mtm)));
     set_icon(mtm, &app);
-    set_store(&cfg, &store);
+    set_store(&cfg, &store, &shared);
     open_notes(mtm);
     let block = block2::RcBlock::new(move |_: std::ptr::NonNull<NSTimer>| {
         let open = NOTES.with_borrow(|n| n.as_ref().is_some_and(|(w, _, _)| w.isVisible()));
@@ -490,9 +490,9 @@ struct Pill {
 
 /// Dock badge: `REC` while recording, `…` while writing notes, nothing otherwise.
 fn badge() -> String {
-    if RECORDING.lock().unwrap().is_some() {
+    if state().recording.lock().is_some() {
         "REC".into()
-    } else if !FINISHING.lock().unwrap().is_empty() {
+    } else if !state().finishing.lock().is_empty() {
         "…".into()
     } else {
         String::new()
@@ -657,8 +657,8 @@ impl Pill {
     /// The dot breathes slowly and lights up with what the mic or system audio hears. Also expands
     /// the recording pill while the mouse is over it.
     fn level(&self) {
-        let peak = f32::from_bits(crate::audio::LEVEL.swap(0, Ordering::Relaxed));
-        let recording = RECORDING.lock().unwrap().is_some();
+        let peak = state().take_audio_level();
+        let recording = state().recording.lock().is_some();
         let alpha = if recording {
             let breath = 0.45 + 0.2 * (self.born.elapsed().as_secs_f32() * std::f32::consts::PI).sin();
             breath.max(0.25 + 1.5 * peak.sqrt()).min(1.0)
@@ -712,7 +712,7 @@ impl Pill {
     /// Resizes around the same center; the compact pill shows only the dot and the time.
     fn set_compact(&self, compact: bool) {
         // Hovering a recording also shows what was said last, below the row.
-        let tall = !compact && RECORDING.lock().unwrap().is_some();
+        let tall = !compact && state().recording.lock().is_some();
         if compact == self.compact.get() && tall != self.said.isHidden() {
             return;
         }
@@ -885,17 +885,17 @@ impl Hud {
 
     /// Called every 100 ms.
     fn update(&self, mtm: MainThreadMarker) {
-        use crate::dictate::{OVERLAY, Overlay};
-        let mut now = OVERLAY.lock().unwrap().clone();
+        use crate::dictate::Overlay;
+        let mut now = state().overlay.lock().clone();
         if let Overlay::Said(_, until) = &now
             && Instant::now() >= *until
         {
             now = Overlay::Hidden;
-            *OVERLAY.lock().unwrap() = Overlay::Hidden;
+            *state().overlay.lock() = Overlay::Hidden;
         }
         if now == Overlay::Listening {
             // The dot follows the mic level, like the recording pill.
-            let peak = f32::from_bits(crate::audio::LEVEL.load(Ordering::Relaxed));
+            let peak = f32::from_bits(state().audio_level.load(Ordering::Relaxed));
             self.dot.setAlphaValue((0.35 + 1.5 * peak.sqrt()).min(1.0) as f64);
         }
         if self.shown.borrow().as_ref() == Some(&now) {

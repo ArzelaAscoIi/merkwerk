@@ -4,6 +4,7 @@
 use crate::{
     audio::Source,
     config::{Config, MODEL_URL, MODEL_V2_URL, PARAKEET_FILES, PARAKEET_URL, VAD_URL},
+    state::AppState,
     store::Segment,
 };
 use anyhow::{Context, Result, bail};
@@ -188,18 +189,15 @@ fn model_files(cfg: &Config, engine: &str) -> Vec<(std::path::PathBuf, String)> 
 }
 
 /// Download the speech and VAD models if missing.
-pub fn ensure_models(cfg: &Config) -> Result<()> {
+pub fn ensure_models(cfg: &Config, state: &AppState) -> Result<()> {
     for (path, url) in model_files(cfg, &cfg.engine()) {
-        ensure_model(&path, &url)?;
+        ensure_model(&path, &url, state)?;
     }
-    ensure_model(&cfg.vad, VAD_URL)
+    ensure_model(&cfg.vad, VAD_URL, state)
 }
 
-/// Bytes downloaded and expected (0 when unknown) of the model file being downloaded, for the UI.
-pub static PROGRESS: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
-
 /// Download one model file if it is missing.
-fn ensure_model(path: &Path, url: &str) -> Result<()> {
+fn ensure_model(path: &Path, url: &str, state: &AppState) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
@@ -224,23 +222,14 @@ fn ensure_model(path: &Path, url: &str) -> Result<()> {
             }
             io::Write::write_all(&mut file, &buf[..n])?;
             done += n as u64;
-            *PROGRESS.lock().unwrap() = Some((done, total));
+            state.download_progress.set(Some((done, total)));
         }
     })();
-    *PROGRESS.lock().unwrap() = None;
+    state.download_progress.set(None);
     copied?;
     fs::rename(&tmp, path)?;
     eprintln!("model ready");
     Ok(())
-}
-
-/// Download progress of the current model file in whole percent, if known.
-pub fn progress_percent() -> Option<u64> {
-    PROGRESS
-        .lock()
-        .unwrap()
-        .filter(|(_, total)| *total > 0)
-        .map(|(done, total)| done * 100 / total)
 }
 
 /// Whether an engine's model files and the shared VAD model are already downloaded.

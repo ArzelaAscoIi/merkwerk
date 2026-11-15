@@ -4,6 +4,7 @@
 use crate::{
     audio::{self, Source},
     config::Config,
+    state::AppState,
 };
 use cpal::{
     FromSample, SizedSample,
@@ -12,7 +13,7 @@ use cpal::{
 use serde::Serialize;
 use std::{
     io::BufRead,
-    sync::{Mutex, mpsc},
+    sync::{Arc, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -21,7 +22,7 @@ use std::{
 const HEARD: f32 = 0.02;
 const TEST: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Test {
     pub running: bool,
     /// None until a test finished.
@@ -30,18 +31,11 @@ pub struct Test {
     pub error: Option<String>,
 }
 
-pub static TEST_STATE: Mutex<Test> = Mutex::new(Test {
-    running: false,
-    me: None,
-    them: None,
-    error: None,
-});
-
 /// Records both sides for 5 s while playing a short tone; the user says something meanwhile.
 /// On macOS this is also when the microphone and system audio permissions are asked for.
-pub fn start_test() {
+pub fn start_test(state: &Arc<AppState>) {
     {
-        let mut t = TEST_STATE.lock().unwrap();
+        let mut t = state.audio_test.lock();
         if t.running {
             return;
         }
@@ -50,9 +44,10 @@ pub fn start_test() {
             ..Test::default()
         };
     }
-    thread::spawn(|| {
-        let result = run_test();
-        *TEST_STATE.lock().unwrap() = match result {
+    let state = state.clone();
+    thread::spawn(move || {
+        let result = run_test(&state.audio_level);
+        *state.audio_test.lock() = match result {
             Ok((me, them)) => Test {
                 running: false,
                 me: Some(me),
@@ -68,9 +63,9 @@ pub fn start_test() {
     });
 }
 
-pub fn run_test() -> anyhow::Result<(bool, bool)> {
+pub fn run_test(level: &audio::Level) -> anyhow::Result<(bool, bool)> {
     let (tx, rx) = mpsc::channel();
-    let capture = audio::start(tx)?;
+    let capture = audio::start(tx, level)?;
     // The tone starts a moment later, so loopback is already listening.
     thread::sleep(Duration::from_millis(500));
     let tone = play_tone().map_err(|e| eprintln!("test tone: {e:#}")).ok();
@@ -169,18 +164,16 @@ pub fn fix(side: Source) -> (Option<&'static str>, &'static str) {
 }
 
 /// The notes model being downloaded into Ollama: percent done, or why it failed.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Pull {
     pub percent: Option<u64>,
     pub error: Option<String>,
 }
 
-pub static PULL: Mutex<Option<Pull>> = Mutex::new(None);
-
 /// `ollama pull <notes model>` through Ollama's API, in the background.
-pub fn pull_model(cfg: &Config) {
+pub fn pull_model(cfg: &Config, state: &Arc<AppState>) {
     {
-        let mut pull = PULL.lock().unwrap();
+        let mut pull = state.model_pull.lock();
         if pull.as_ref().is_some_and(|p| p.error.is_none()) {
             return;
         }
@@ -190,20 +183,21 @@ pub fn pull_model(cfg: &Config) {
         });
     }
     let (url, model) = (cfg.llm_url(), cfg.llm_model());
+    let state = state.clone();
     thread::spawn(move || {
-        let error = run_pull(&url, &model).err().map(|e| format!("{e:#}"));
+        let error = run_pull(&url, &model, &state).err().map(|e| format!("{e:#}"));
         if let Some(e) = &error {
             eprintln!("ollama pull {model}: {e}");
         }
         // Done: clear it; the notes check sees the model on its next round.
-        *PULL.lock().unwrap() = error.map(|error| Pull {
+        *state.model_pull.lock() = error.map(|error| Pull {
             percent: None,
             error: Some(error),
         });
     });
 }
 
-fn run_pull(chat_url: &str, model: &str) -> anyhow::Result<()> {
+fn run_pull(chat_url: &str, model: &str, state: &AppState) -> anyhow::Result<()> {
     let base = chat_url.split_once("/v1/").map_or(chat_url, |(b, _)| b);
     let mut resp = ureq::post(&format!("{base}/api/pull")).send_json(serde_json::json!({ "model": model }))?;
     let reader = std::io::BufReader::new(resp.body_mut().with_config().limit(u64::MAX).reader());
@@ -216,7 +210,7 @@ fn run_pull(chat_url: &str, model: &str) -> anyhow::Result<()> {
         if let (Some(done), Some(total)) = (v["completed"].as_u64(), v["total"].as_u64())
             && total > 0
         {
-            *PULL.lock().unwrap() = Some(Pull {
+            *state.model_pull.lock() = Some(Pull {
                 percent: Some(done * 100 / total),
                 error: None,
             });

@@ -6,6 +6,7 @@
 use crate::{
     config::Config,
     screen::{self, Snapshot},
+    state::AppState,
     store::Store,
     summarize,
 };
@@ -109,7 +110,7 @@ fn day_file(cfg: &Config, day: NaiveDate, ext: &str) -> PathBuf {
 }
 
 /// Capture loop for `merkwerk watch`; never returns. Writes yesterday's work log after midnight.
-pub fn run(cfg: &Config, store: &Store) {
+pub fn run(cfg: &Config, store: &Store, state: &AppState) {
     let (c, s) = (cfg.clone(), store.clone());
     // The notes server may not be up yet right after login; retry hourly until every day has a log.
     thread::spawn(move || {
@@ -118,7 +119,7 @@ pub fn run(cfg: &Config, store: &Store) {
         }
     });
     // Off until switched on: no permission prompt, nothing read.
-    while !crate::ui::SCREEN.load(std::sync::atomic::Ordering::Relaxed) {
+    while !state.screen.is_set() {
         thread::sleep(TICK);
     }
     if !screen::trusted(true) {
@@ -146,7 +147,7 @@ pub fn run(cfg: &Config, store: &Store) {
             today = now.date_naive();
             last_text.clear();
         }
-        if !crate::ui::SCREEN.load(std::sync::atomic::Ordering::Relaxed) || screen::idle_secs() > IDLE_SECS {
+        if !state.screen.is_set() || screen::idle_secs() > IDLE_SECS {
             continue;
         }
         // No keyboard or mouse input since the last tick and the same app in front: the walk would
