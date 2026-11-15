@@ -5,6 +5,7 @@ use crate::{
     calendar,
     config::Config,
     detect, screen,
+    state::AppState,
     store::{self, Meta, Store},
     summarize,
     transcribe::{CHUNK_SECS, Transcriber},
@@ -73,25 +74,26 @@ impl Recording {
 pub fn record(
     cfg: &Config,
     store: &Store,
+    state: &Arc<AppState>,
     title: &str,
     app: Option<String>,
     mut should_stop: impl FnMut() -> bool,
 ) -> Result<Recording> {
     let (tx, rx) = mpsc::channel();
-    let mut capture = audio::start(tx)?;
+    let mut capture = audio::start(tx, &state.audio_level)?;
     let meta = store.create(title, app)?;
     eprintln!("recording -> {}", store.dir(&meta.id).display());
 
     let (chunk_tx, chunk_rx) = mpsc::channel::<Chunk>();
     let worker = {
-        let (cfg, store, id) = (cfg.clone(), store.clone(), meta.id.clone());
+        let (cfg, store, id, state) = (cfg.clone(), store.clone(), meta.id.clone(), state.clone());
         thread::spawn(move || {
             // Loaded here, not before capture: a missing model loses the live transcript, never the audio.
             let mut transcriber = match Transcriber::load(&cfg) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("transcribe: {e:#}");
-                    crate::ui::download_models(cfg);
+                    crate::models::download_in_background(cfg, state);
                     return false;
                 }
             };

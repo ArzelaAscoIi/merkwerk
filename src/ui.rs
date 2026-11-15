@@ -11,78 +11,38 @@ pub use mac::{run, run_notes};
 #[cfg(not(target_os = "macos"))]
 pub use other::{run, run_notes};
 
-use crate::{config::Config, notes, store::Store};
+use crate::{config::Config, notes, state::AppState, store::Store};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
     process::Command,
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Instant,
+    sync::{Arc, OnceLock},
 };
 
-/// Set by the watch loop: the app being recorded and when it started.
-pub static RECORDING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-/// Ids of meetings still being transcribed / summarized.
-pub static FINISHING: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// The menu asked for the Dictation tab; switched to on the next refresh, once the page has loaded.
-static SHOW_DICTATION: AtomicBool = AtomicBool::new(false);
-/// Menu clicks, consumed by the watch loop.
-pub static START: AtomicBool = AtomicBool::new(false);
-pub static STOP: AtomicBool = AtomicBool::new(false);
-/// Ignore the detected call (until its app releases the mic).
-pub static IGNORE: AtomicBool = AtomicBool::new(false);
-/// Auto-record detected calls; off by default, persisted in settings.json.
-pub static AUTO: AtomicBool = AtomicBool::new(false);
-/// Record screen activity; on by default, persisted in settings.json.
-pub static SCREEN: AtomicBool = AtomicBool::new(false);
-/// A call detected in manual mode, waiting for Record or Ignore.
-pub static PENDING: Mutex<Option<String>> = Mutex::new(None);
-/// Why notes can't be written right now (no server, model missing), in plain words; None when fine
-/// or unknown (a hosted endpoint without a model list).
-static NOTES_PROBLEM: Mutex<Option<String>> = Mutex::new(None);
-/// The notes server answered its last model list request.
-static NOTES_REACHABLE: AtomicBool = AtomicBool::new(false);
-/// Models offered by the notes server, refreshed in the background.
-static SERVER_MODELS: Mutex<Vec<String>> = Mutex::new(vec![]);
-/// Chat answers waiting to be handed to the page: (request id, answer HTML).
-static ANSWERS: Mutex<Vec<(u64, String)>> = Mutex::new(vec![]);
-/// Speech engine whose model is being downloaded.
-static DOWNLOADING: Mutex<Option<String>> = Mutex::new(None);
+/// What the UI callbacks reach: they have no arguments to carry it, so it is set once at startup.
+struct Ctx {
+    cfg: Config,
+    store: Store,
+    state: Arc<AppState>,
+}
 
-/// Download the selected engine's missing model files in the background, one download at a time;
-/// the menu shows "(downloading...)" meanwhile.
-pub fn download_models(cfg: Config) {
-    let engine = cfg.engine();
-    {
-        let mut downloading = DOWNLOADING.lock().unwrap();
-        if downloading.is_some() {
-            return;
-        }
-        *downloading = Some(engine);
-    }
-    std::thread::spawn(move || {
-        // Loop: the engine may be switched mid-download; a pick that found DOWNLOADING set relies
-        // on this thread. The installed check and clearing share the lock so no pick slips between.
-        loop {
-            {
-                let mut downloading = DOWNLOADING.lock().unwrap();
-                let engine = cfg.engine();
-                if crate::transcribe::installed(&cfg, &engine) {
-                    *downloading = None;
-                    return;
-                }
-                *downloading = Some(engine);
-            }
-            if let Err(e) = crate::transcribe::ensure_models(&cfg) {
-                eprintln!("model download: {e:#}");
-                *DOWNLOADING.lock().unwrap() = None;
-                return;
-            }
-        }
+static CTX: OnceLock<Ctx> = OnceLock::new();
+
+fn set_store(cfg: &Config, store: &Store, state: &Arc<AppState>) {
+    let _ = CTX.set(Ctx {
+        cfg: cfg.clone(),
+        store: store.clone(),
+        state: state.clone(),
     });
+}
+
+fn store() -> Option<(Config, Store)> {
+    CTX.get().map(|c| (c.cfg.clone(), c.store.clone()))
+}
+
+#[expect(clippy::expect_used, reason = "every UI entry point calls set_store first")]
+fn state() -> &'static Arc<AppState> {
+    &CTX.get().expect("ui context set at startup").state
 }
 
 /// Speech engines offered in the menu: id and label.
@@ -111,13 +71,13 @@ enum Pick {
 fn set_recorded(cfg: &Config, app: String, record: bool) {
     let app = notes::app_name(&app);
     if !record
-        && RECORDING
+        && state()
+            .recording
             .lock()
-            .unwrap()
             .as_ref()
             .is_some_and(|r| notes::app_name(&r.0).eq_ignore_ascii_case(&app))
     {
-        STOP.store(true, Ordering::Relaxed);
+        state().stop.set(true);
     }
     let (add, remove) = if record {
         ("allow", "ignore")
@@ -141,7 +101,7 @@ fn set_recorded(cfg: &Config, app: String, record: bool) {
 /// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
 /// Auto-record on or off, saved to settings.json.
 fn set_auto(on: bool) {
-    AUTO.store(on, Ordering::Relaxed);
+    state().auto_record.set(on);
     if let Some((cfg, _)) = store() {
         let _ = crate::config::set_setting(&cfg.root, "auto_record", on.into());
     }
@@ -149,7 +109,7 @@ fn set_auto(on: bool) {
 
 /// Writes a meeting's notes again in the background (the Write notes button), like after a recording.
 fn write_notes(cfg: Config, store: Store, id: String) {
-    let mut finishing = FINISHING.lock().unwrap();
+    let mut finishing = state().finishing.lock();
     if finishing.contains(&id) || store.load(&id).is_ok_and(|m| store.live(&m)) {
         return;
     }
@@ -158,7 +118,7 @@ fn write_notes(cfg: Config, store: Store, id: String) {
         if let Err(e) = crate::session::finalize(&cfg, &store, &id) {
             eprintln!("notes for {id}: {e:#}");
         }
-        FINISHING.lock().unwrap().retain(|f| *f != id);
+        state().finishing.lock().retain(|f| *f != id);
     });
 }
 
@@ -189,7 +149,7 @@ fn watch_models(cfg: &Config) {
                 n.iter()
                     .any(|m| *m == model || m.strip_suffix(":latest") == Some(model.as_str()))
             };
-            *NOTES_PROBLEM.lock().unwrap() = match (&url, &names) {
+            *state().notes_problem.lock() = match (&url, &names) {
                 (None, _) => None,
                 (Some(_), None) => Some(format!(
                     "No notes model is running: {server} isn't reachable on this computer."
@@ -200,22 +160,22 @@ fn watch_models(cfg: &Config) {
                 )),
                 _ => None,
             };
-            NOTES_REACHABLE.store(names.is_some(), Ordering::Relaxed);
+            state().notes_reachable.set(names.is_some());
             // Empty on failure so a previous server's models don't linger.
             let mut names = names.unwrap_or_default();
             names.sort();
-            *SERVER_MODELS.lock().unwrap() = names;
+            *state().server_models.lock() = names;
             std::thread::sleep(std::time::Duration::from_secs(10));
         }
     });
 }
 
 fn title() -> String {
-    if let Some((_, since)) = &*RECORDING.lock().unwrap() {
+    if let Some((_, since)) = &*state().recording.lock() {
         let s = since.elapsed().as_secs();
         return format!("● {:02}:{:02}", s / 60, s % 60);
     }
-    if !FINISHING.lock().unwrap().is_empty() {
+    if !state().finishing.lock().is_empty() {
         "◌ mw".into()
     } else {
         "mw".into()
@@ -245,20 +205,20 @@ const ACCESSIBILITY_SETTINGS: &str = "x-apple.systempreferences:com.apple.prefer
 /// Screen activity is on but macOS hasn't granted Accessibility (e.g. after a reinstall changed the
 /// signature): nothing is recorded until it is.
 fn screen_blocked() -> bool {
-    SCREEN.load(Ordering::Relaxed) && !crate::screen::trusted(false)
+    state().screen.is_set() && !crate::screen::trusted(false)
 }
 
 fn entries(store: &Store) -> Vec<Row> {
-    let recording = RECORDING.lock().unwrap().clone();
-    let pending = PENDING.lock().unwrap().clone();
-    let auto = AUTO.load(Ordering::Relaxed);
+    let recording = state().recording.lock().clone();
+    let pending = state().pending.lock().clone();
+    let auto = state().auto_record.is_set();
     let mut rows = vec![match (&recording, &pending) {
         (Some((app, _)), _) => Row::Label(format!("Recording: {app}")),
         (None, Some(app)) => Row::Label(format!("Call detected: {app}")),
         (None, None) if auto => Row::Label("Watching for calls (auto-record)".into()),
         (None, None) => Row::Label("Watching for calls (manual)".into()),
     }];
-    let finishing = FINISHING.lock().unwrap().len();
+    let finishing = state().finishing.lock().len();
     if finishing > 0 {
         rows.push(Row::Label(format!("Writing notes for {finishing} meeting(s)")));
     }
@@ -278,14 +238,14 @@ fn entries(store: &Store) -> Vec<Row> {
         rows.push(Row::Never(app));
     }
     rows.push(Row::Auto(auto));
-    rows.push(Row::Screen(SCREEN.load(Ordering::Relaxed)));
+    rows.push(Row::Screen(state().screen.is_set()));
     if screen_blocked() {
         rows.push(Row::Open(
             "⚠︎ Screen activity paused: allow Accessibility…".into(),
             ACCESSIBILITY_SETTINGS.into(),
         ));
     }
-    if NOTES_PROBLEM.lock().unwrap().is_some() {
+    if state().notes_problem.lock().is_some() {
         rows.push(Row::Open(
             "⚠︎ Notes are off: set up a notes model…".into(),
             crate::summarize::SETUP_URL.into(),
@@ -294,7 +254,7 @@ fn entries(store: &Store) -> Vec<Row> {
     rows.push(Row::Separator);
     if let Some((cfg, _)) = self::store() {
         let engine = cfg.engine();
-        let downloading = DOWNLOADING.lock().unwrap().clone();
+        let downloading = state().downloading.lock().clone();
         let speech = ENGINES
             .iter()
             .map(|(id, label)| {
@@ -321,7 +281,7 @@ fn entries(store: &Store) -> Vec<Row> {
         let current = cfg.llm_model();
         // Ollama lists `gemma4` as `gemma4:latest`.
         let same = |m: &str| m == current || m.strip_suffix(":latest") == Some(current.as_str());
-        let mut models = SERVER_MODELS.lock().unwrap().clone();
+        let mut models = state().server_models.lock().clone();
         if !models.iter().any(|m| same(m)) {
             models.insert(0, current.clone());
         }
@@ -330,7 +290,7 @@ fn entries(store: &Store) -> Vec<Row> {
             .map(|m| (m.clone(), same(&m), Pick::Llm(m)))
             .collect();
         rows.push(Row::Choice("Notes model", notes));
-        let shortcut = crate::dictate::label(&crate::dictate::SHORTCUT.lock().unwrap());
+        let shortcut = crate::dictate::label(&state().shortcut.lock());
         rows.push(Row::Dictation(if shortcut.is_empty() {
             "Set up dictation…".into()
         } else {
@@ -356,19 +316,14 @@ enum PillState {
 }
 
 fn pill_state() -> PillState {
-    if let Some((app, since)) = &*RECORDING.lock().unwrap() {
+    if let Some((app, since)) = &*state().recording.lock() {
         return PillState::Recording(app.clone(), since.elapsed().as_secs());
     }
-    match &*PENDING.lock().unwrap() {
+    match &*state().pending.lock() {
         Some(app) => PillState::Pending(app.clone()),
         None => PillState::Hidden,
     }
 }
-
-/// The notes page wants a full resend (a delete failed after the page dropped the row).
-static RESEND: AtomicBool = AtomicBool::new(false);
-/// Config and store of the running app, set once at startup.
-static STORE: Mutex<Option<(Config, Store)>> = Mutex::new(None);
 
 thread_local! {
     /// Dictation tab state last sent to the notes page.
@@ -382,10 +337,10 @@ fn setup_state(cfg: &Config) -> String {
     use crate::{audio::Source, setup};
     let engine = cfg.engine();
     let speech_ready = crate::transcribe::installed(cfg, &engine);
-    let downloading = DOWNLOADING.lock().unwrap().is_some();
+    let downloading = state().downloading.lock().is_some();
     let ollama = cfg.llm_url() == crate::config::LLM_SERVERS[0].1;
-    let reachable = NOTES_REACHABLE.load(Ordering::Relaxed);
-    let test = setup::TEST_STATE.lock().unwrap().clone();
+    let reachable = state().notes_reachable.is_set();
+    let test = state().audio_test.lock().clone();
     let fix = |side, heard: Option<bool>| {
         (heard == Some(false)).then(|| {
             let (url, text) = setup::fix(side);
@@ -396,17 +351,17 @@ fn setup_state(cfg: &Config) -> String {
         "speech": {
             "ready": speech_ready,
             "downloading": downloading,
-            "percent": crate::transcribe::progress_percent(),
+            "percent": state().download_percent(),
         },
         "notes": {
-            "problem": *NOTES_PROBLEM.lock().unwrap(),
+            "problem": *state().notes_problem.lock(),
             "model": cfg.llm_model(),
             "server": crate::summarize::server_name(cfg),
             // Ollama runs but lacks the model: one click downloads it.
             "can_pull": ollama && reachable,
             // Ollama isn't running (or installed): link to its download page.
             "no_ollama": ollama && !reachable,
-            "pull": *setup::PULL.lock().unwrap(),
+            "pull": *state().model_pull.lock(),
         },
         "test": {
             "running": test.running,
@@ -419,14 +374,6 @@ fn setup_state(cfg: &Config) -> String {
     })
     .to_string()
     .replace('<', "\\u003c")
-}
-
-fn set_store(cfg: &Config, store: &Store) {
-    *STORE.lock().unwrap() = Some((cfg.clone(), store.clone()));
-}
-
-fn store() -> Option<(Config, Store)> {
-    STORE.lock().unwrap().clone()
 }
 
 /// Opens a folder, file or URL with the system's default handler.
@@ -448,7 +395,7 @@ fn pick(pick: Pick) {
             let _ = crate::config::set_setting(&cfg.root, "engine", engine.clone().into());
             if !crate::transcribe::installed(&cfg, &engine) {
                 // The next recording uses the new engine.
-                download_models(cfg);
+                crate::models::download_in_background(cfg, state().clone());
             }
         }
         Pick::Llm(model) => {
@@ -456,15 +403,15 @@ fn pick(pick: Pick) {
         }
         Pick::Server(url) => {
             let _ = crate::config::set_setting(&cfg.root, "llm_url", url.into());
-            SERVER_MODELS.lock().unwrap().clear();
+            state().server_models.lock().clear();
         }
         Pick::Never(app) => set_recorded(&cfg, app, false),
     }
 }
 
 fn toggle_screen() {
-    let on = !SCREEN.load(Ordering::Relaxed);
-    SCREEN.store(on, Ordering::Relaxed);
+    let on = !state().screen.is_set();
+    state().screen.set(on);
     if let Some((cfg, _)) = store() {
         let _ = crate::config::set_setting(&cfg.root, "screen", on.into());
     }
@@ -472,12 +419,12 @@ fn toggle_screen() {
 
 /// Start/Stop recording, whichever applies.
 fn toggle_recording() {
-    let flag = if RECORDING.lock().unwrap().is_some() {
-        &STOP
+    let st = state();
+    if st.is_recording() {
+        st.stop.set(true);
     } else {
-        &START
-    };
-    flag.store(true, Ordering::Relaxed);
+        st.start.set(true);
+    }
 }
 
 /// A message from the notes page (`window.webkit.messageHandlers.merkwerk.postMessage`): chat
@@ -487,19 +434,19 @@ fn handle_message(raw: &str) {
         return;
     };
     match req["action"].as_str() {
-        Some("start") => return START.store(true, Ordering::Relaxed),
-        Some("stop") => return STOP.store(true, Ordering::Relaxed),
+        Some("start") => return state().start.set(true),
+        Some("stop") => return state().stop.set(true),
         Some("record_shortcut") => {
-            *crate::dictate::CAPTURE.lock().unwrap() = crate::dictate::Capture::Listening;
+            *state().capture.lock() = crate::dictate::Capture::Listening;
             return;
         }
         Some("cancel_shortcut") => {
-            *crate::dictate::CAPTURE.lock().unwrap() = crate::dictate::Capture::Off;
+            *state().capture.lock() = crate::dictate::Capture::Off;
             return;
         }
         Some("clear_shortcut") => {
             if let Some((cfg, _)) = store() {
-                crate::dictate::set_shortcut(&cfg, vec![]);
+                crate::dictate::set_shortcut(&cfg, state(), vec![]);
             }
             return;
         }
@@ -516,16 +463,16 @@ fn handle_message(raw: &str) {
             }
             return;
         }
-        Some("test_audio") => return crate::setup::start_test(),
+        Some("test_audio") => return crate::setup::start_test(state()),
         Some("pull_model") => {
             if let Some((cfg, _)) = store() {
-                crate::setup::pull_model(&cfg);
+                crate::setup::pull_model(&cfg, state());
             }
             return;
         }
         Some("retry_download") => {
             if let Some((cfg, _)) = store() {
-                download_models(cfg);
+                crate::models::download_in_background(cfg, state().clone());
             }
             return;
         }
@@ -579,7 +526,7 @@ fn handle_message(raw: &str) {
         if let Err(e) = store.trash(req["target"].as_str().unwrap_or_default()) {
             eprintln!("delete: {e:#}");
             // The page already dropped the row; nothing changed on disk, so force a resend.
-            RESEND.store(true, Ordering::Relaxed);
+            state().resend.set(true);
         }
         return;
     }
@@ -605,21 +552,21 @@ fn handle_message(raw: &str) {
             )
         });
         let html = crate::notes::markdown(&answer);
-        ANSWERS
+        state()
+            .answers
             .lock()
-            .unwrap()
             .push((id, serde_json::json!({"html": html, "text": answer}).to_string()));
     });
 }
 
 /// A fresh notes page and the fingerprint of the data in it.
 fn notes_page(cfg: &Config, store: &Store) -> (String, u64) {
-    let data = notes::data(cfg, store);
-    let dictation = crate::dictate::page_state(cfg);
+    let data = notes::data(cfg, store, state());
+    let dictation = crate::dictate::page_state(cfg, state());
     let html = notes::page(&data, &dictation);
     DICTATION_SHOWN.with_borrow_mut(|s| *s = dictation);
     SETUP_SHOWN.with_borrow_mut(String::clear);
-    (html, notes::fingerprint(cfg, store))
+    (html, notes::fingerprint(cfg, store, state()))
 }
 
 /// Scripts that bring an open notes page up to date (a running transcript, finished notes, chat
@@ -627,19 +574,19 @@ fn notes_page(cfg: &Config, store: &Store) -> (String, u64) {
 fn notes_updates(cfg: &Config, store: &Store, shown: &mut u64) -> Vec<String> {
     let mut js = vec![format!(
         "window.merkwerkRecording({}); window.merkwerkScreenBlocked({}); window.merkwerkNotesServer({}); window.merkwerkIgnored({})",
-        RECORDING.lock().unwrap().is_some(),
+        state().recording.lock().is_some(),
         screen_blocked(),
-        serde_json::json!(*NOTES_PROBLEM.lock().unwrap()),
+        serde_json::json!(*state().notes_problem.lock()),
         serde_json::json!(cfg.ignore())
     )];
-    if SHOW_DICTATION.swap(false, Ordering::Relaxed) {
+    if state().show_dictation.take() {
         js.push("switchTab(\"dictation\")".into());
     }
     // The Dictation tab: sent only when it changed.
-    let state = crate::dictate::page_state(cfg);
-    if DICTATION_SHOWN.with_borrow(|s| *s != state) {
-        js.push(format!("window.merkwerkDictation({state})"));
-        DICTATION_SHOWN.with_borrow_mut(|s| *s = state);
+    let dictation = crate::dictate::page_state(cfg, state());
+    if DICTATION_SHOWN.with_borrow(|s| *s != dictation) {
+        js.push(format!("window.merkwerkDictation({dictation})"));
+        DICTATION_SHOWN.with_borrow_mut(|s| *s = dictation);
     }
     // The "Get started" page: sent only when it changed.
     let setup = setup_state(cfg);
@@ -647,16 +594,16 @@ fn notes_updates(cfg: &Config, store: &Store, shown: &mut u64) -> Vec<String> {
         js.push(format!("window.merkwerkSetup({setup})"));
         SETUP_SHOWN.with_borrow_mut(|s| *s = setup);
     }
-    for (id, answer) in ANSWERS.lock().unwrap().drain(..) {
+    for (id, answer) in state().answers.lock().drain(..) {
         js.push(format!("window.merkwerkAnswer({id}, {answer})"));
     }
-    if RESEND.swap(false, Ordering::Relaxed) {
+    if state().resend.take() {
         *shown = 0;
     }
     // Rebuild the page data only when one of its files changed.
-    let fingerprint = notes::fingerprint(cfg, store);
+    let fingerprint = notes::fingerprint(cfg, store, state());
     if fingerprint != *shown {
-        js.push(format!("window.merkwerkUpdate({})", notes::data(cfg, store)));
+        js.push(format!("window.merkwerkUpdate({})", notes::data(cfg, store, state())));
         *shown = fingerprint;
     }
     js
