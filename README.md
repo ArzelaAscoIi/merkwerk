@@ -61,16 +61,18 @@ no usage limits, no cloud.
 Requirements: macOS 14.6 or newer, and Ollama or LM Studio for notes (optional; any
 OpenAI-compatible endpoint works).
 
-With [Homebrew](https://brew.sh) on Apple Silicon:
+On Apple Silicon:
 
 ```sh
-brew install arzelaascoii/tap/merkwerk
-merkwerk                # installs merkwerk.app and opens it
+curl -fsSL https://raw.githubusercontent.com/ArzelaAscoIi/merkwerk/main/install.sh | sh
 ```
+
+[`install.sh`](install.sh) downloads the latest release, checks its SHA-256, and installs
+`~/Applications/merkwerk.app` and opens it.
 
 The window walks you through the rest: the speech model downloads by itself, notes need
 [Ollama](https://ollama.com/download) (one click downloads the model), and a 5 second test checks
-that both sides of a call are heard. After `brew upgrade merkwerk`, run `merkwerk` again.
+that both sides of a call are heard. To update, run the same command again.
 
 The binary is built by this repository's [release workflow](.github/workflows/release.yml) in
 public GitHub Actions. Each release carries the archive, its SHA-256 and a build attestation;
@@ -78,7 +80,7 @@ check that a download was built from this source with
 `gh attestation verify merkwerk-<tag>-aarch64-apple-darwin.tar.gz -R ArzelaAscoIi/merkwerk`.
 
 To build it yourself instead (Intel Macs too), install the [Rust toolchain](https://rustup.rs) and
-replace the first line with `cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.3`,
+run `cargo install --git https://github.com/ArzelaAscoIi/merkwerk --tag v0.0.3`,
 or clone the repository and run `cargo install --path .` for the latest `main`. See
 [releases](https://github.com/ArzelaAscoIi/merkwerk/releases) for what changed.
 
