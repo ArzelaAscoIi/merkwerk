@@ -12,8 +12,9 @@ use std::sync::mpsc::Sender;
 
 pub const RATE: u32 = 16_000;
 
-/// Loudest sample since the UI last looked, as f32 bits (non-negative floats order like their bits).
-pub static LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Where capture reports the loudest sample since the UI last looked, as f32 bits (non-negative
+/// floats order like their bits).
+pub type Level = std::sync::Arc<std::sync::atomic::AtomicU32>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -40,9 +41,9 @@ pub struct Capture {
     pub resamplers: [Resampler; 2],
 }
 
-pub fn start(tx: Sender<(Source, Vec<f32>)>) -> Result<Capture> {
-    let (mic_stream, mic_rate) = open_mic(tx.clone())?;
-    let (out_stream, out_rate) = system_audio(tx)?;
+pub fn start(tx: Sender<(Source, Vec<f32>)>, level: &Level) -> Result<Capture> {
+    let (mic_stream, mic_rate) = open_mic(tx.clone(), level)?;
+    let (out_stream, out_rate) = system_audio(tx, level)?;
     Ok(Capture {
         streams: vec![Box::new(mic_stream), out_stream],
         resamplers: [Resampler::new(mic_rate), Resampler::new(out_rate)],
@@ -51,17 +52,17 @@ pub fn start(tx: Sender<(Source, Vec<f32>)>) -> Result<Capture> {
 
 /// Building an input stream on an output device is cpal's loopback (macOS 14.6+, WASAPI).
 #[cfg(not(target_os = "linux"))]
-fn system_audio(tx: Sender<(Source, Vec<f32>)>) -> Result<(Box<dyn std::any::Any>, u32)> {
+fn system_audio(tx: Sender<(Source, Vec<f32>)>, level: &Level) -> Result<(Box<dyn std::any::Any>, u32)> {
     let out = cpal::default_host()
         .default_output_device()
         .context("no output device")?;
-    let (stream, rate) = open(&out, out.default_output_config()?, Source::Them, tx)?;
+    let (stream, rate) = open(&out, out.default_output_config()?, Source::Them, tx, level)?;
     Ok((Box::new(stream), rate))
 }
 
 /// ALSA has no loopback; record the default output's monitor through PulseAudio / pipewire-pulse.
 #[cfg(target_os = "linux")]
-fn system_audio(tx: Sender<(Source, Vec<f32>)>) -> Result<(Box<dyn std::any::Any>, u32)> {
+fn system_audio(tx: Sender<(Source, Vec<f32>)>, level: &Level) -> Result<(Box<dyn std::any::Any>, u32)> {
     use std::io::Read;
     let mut child = std::process::Command::new("parec")
         .args([
@@ -75,12 +76,13 @@ fn system_audio(tx: Sender<(Source, Vec<f32>)>) -> Result<(Box<dyn std::any::Any
         .spawn()
         .context("parec (pulseaudio-utils) is needed to record the other side of calls")?;
     let mut out = child.stdout.take().context("parec stdout")?;
+    let level = level.clone();
     std::thread::spawn(move || {
         let mut buf = vec![0u8; RATE as usize / 10 * 4];
         while out.read_exact(&mut buf).is_ok() {
             let block: Vec<f32> = buf.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
             let peak = block.iter().fold(0f32, |m, x| m.max(x.abs()));
-            LEVEL.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            level.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);
             if tx.send((Source::Them, block)).is_err() {
                 break;
             }
@@ -97,14 +99,14 @@ fn system_audio(tx: Sender<(Source, Vec<f32>)>) -> Result<(Box<dyn std::any::Any
 }
 
 /// The microphone alone (dictation), with its resampler to 16 kHz.
-pub fn mic(tx: Sender<(Source, Vec<f32>)>) -> Result<(cpal::Stream, Resampler)> {
-    let (stream, rate) = open_mic(tx)?;
+pub fn mic(tx: Sender<(Source, Vec<f32>)>, level: &Level) -> Result<(cpal::Stream, Resampler)> {
+    let (stream, rate) = open_mic(tx, level)?;
     Ok((stream, Resampler::new(rate)))
 }
 
-fn open_mic(tx: Sender<(Source, Vec<f32>)>) -> Result<(cpal::Stream, u32)> {
+fn open_mic(tx: Sender<(Source, Vec<f32>)>, level: &Level) -> Result<(cpal::Stream, u32)> {
     let mic = cpal::default_host().default_input_device().context("no input device")?;
-    open(&mic, mic.default_input_config()?, Source::Me, tx)
+    open(&mic, mic.default_input_config()?, Source::Me, tx, level)
 }
 
 fn open(
@@ -112,13 +114,14 @@ fn open(
     config: cpal::SupportedStreamConfig,
     source: Source,
     tx: Sender<(Source, Vec<f32>)>,
+    level: &Level,
 ) -> Result<(cpal::Stream, u32)> {
     use cpal::SampleFormat as F;
     match config.sample_format() {
-        F::F32 => open_as::<f32>(device, config, source, tx),
-        F::I16 => open_as::<i16>(device, config, source, tx),
-        F::I32 => open_as::<i32>(device, config, source, tx),
-        F::U16 => open_as::<u16>(device, config, source, tx),
+        F::F32 => open_as::<f32>(device, config, source, tx, level),
+        F::I16 => open_as::<i16>(device, config, source, tx, level),
+        F::I32 => open_as::<i32>(device, config, source, tx, level),
+        F::U16 => open_as::<u16>(device, config, source, tx, level),
         f => bail!("unsupported sample format {f:?}"),
     }
 }
@@ -128,12 +131,14 @@ fn open_as<T: SizedSample + Send + 'static>(
     config: cpal::SupportedStreamConfig,
     source: Source,
     tx: Sender<(Source, Vec<f32>)>,
+    level: &Level,
 ) -> Result<(cpal::Stream, u32)>
 where
     f32: FromSample<T>,
 {
     let channels = config.channels() as usize;
     let rate = config.sample_rate();
+    let level = level.clone();
     let stream = device.build_input_stream(
         config.into(),
         move |data: &[T], _: &cpal::InputCallbackInfo| {
@@ -142,7 +147,7 @@ where
                 .map(|f| f.iter().map(|&x| <f32 as FromSample<T>>::from_sample_(x)).sum::<f32>() / channels as f32)
                 .collect();
             let peak = mono.iter().fold(0f32, |m: f32, x: &f32| m.max(x.abs()));
-            LEVEL.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            level.fetch_max(peak.to_bits(), std::sync::atomic::Ordering::Relaxed);
             let _ = tx.send((source, mono));
         },
         move |e| eprintln!("audio ({}): {e}", source.label()),

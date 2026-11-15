@@ -8,11 +8,13 @@ mod config;
 mod detect;
 mod dictate;
 mod mcp;
+mod models;
 mod notes;
 #[cfg_attr(not(target_os = "macos"), path = "other/screen.rs")]
 mod screen;
 mod session;
 mod setup;
+mod state;
 mod store;
 mod summarize;
 mod transcribe;
@@ -20,6 +22,7 @@ mod ui;
 
 use anyhow::{Context, Result};
 use config::Config;
+use state::AppState;
 use std::{
     env, io,
     sync::{
@@ -59,7 +62,8 @@ const CALL_IDLE: Duration = Duration::from_secs(15);
 fn main() -> Result<()> {
     let cfg = Config::from_env();
     let store = Store { root: cfg.root.clone() };
-    *dictate::SHORTCUT.lock().unwrap() = dictate::configured(&cfg);
+    let state = AppState::new();
+    state.shortcut.set(dictate::configured(&cfg));
     // Finder may pass a process serial number (-psn_...) to apps it launches.
     let args: Vec<String> = env::args().skip(1).filter(|a| !a.starts_with("-psn")).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
@@ -68,8 +72,8 @@ fn main() -> Result<()> {
         // From a terminal on macOS: run as merkwerk.app, which can get the system audio permission.
         #[cfg(target_os = "macos")]
         None if io::IsTerminal::is_terminal(&io::stderr()) && !in_app_bundle() => start_app(),
-        None | Some("watch") => watch(&cfg, &store),
-        Some("record") => record(&cfg, &store, arg(1).unwrap_or(store::UNTITLED)),
+        None | Some("watch") => watch(&cfg, &store, &state),
+        Some("record") => record(&cfg, &store, &state, arg(1).unwrap_or(store::UNTITLED)),
         Some("list") => {
             for m in store.list() {
                 println!("{}  {:>5}  {}", m.id, duration(&m), m.title);
@@ -89,7 +93,7 @@ fn main() -> Result<()> {
         Some("transcribe") => session::retranscribe(&cfg, &store, id()?),
         Some("summarize") => session::finalize(&cfg, &store, id()?),
         Some("mcp") => mcp::serve(&cfg, &store),
-        Some("notes") => ui::run_notes(cfg.clone(), store),
+        Some("notes") => ui::run_notes(cfg.clone(), store, state),
         Some("activity") => {
             print!("{}", activity::digest(&cfg, day(arg(1))?, 200));
             Ok(())
@@ -107,10 +111,10 @@ fn main() -> Result<()> {
             println!("{}", activity::write_work_log(&cfg, &store, day(arg(1))?)?);
             Ok(())
         }
-        Some("model") => transcribe::ensure_models(&cfg),
+        Some("model") => transcribe::ensure_models(&cfg, &state),
         Some("test") => {
             eprintln!("say something for 5 seconds; merkwerk plays a short tone ...");
-            let (me, them) = setup::run_test()?;
+            let (me, them) = setup::run_test(&state.audio_level)?;
             for (heard, label, side) in [
                 (me, "your voice", audio::Source::Me),
                 (them, "computer audio", audio::Source::Them),
@@ -132,29 +136,29 @@ fn main() -> Result<()> {
     }
 }
 
-fn watch(cfg: &Config, store: &Store) -> Result<()> {
+fn watch(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> {
     log_to_file(cfg);
     // In the background: the window opens at once and shows the download; recordings made before
     // it finishes keep their audio (`merkwerk transcribe <id>` later).
-    ui::download_models(cfg.clone());
+    models::download_in_background(cfg.clone(), state.clone());
     eprintln!("watching for calls, meetings go to {}", cfg.root.display());
-    ui::AUTO.store(config::auto_record(&cfg.root), Ordering::Relaxed);
-    ui::SCREEN.store(cfg.screen_enabled(), Ordering::Relaxed);
-    let (c, s) = (cfg.clone(), store.clone());
-    thread::spawn(move || activity::run(&c, &s));
-    let c = cfg.clone();
-    thread::spawn(move || dictate::run(c));
-    let (c, s) = (cfg.clone(), store.clone());
+    state.auto_record.set(config::auto_record(&cfg.root));
+    state.screen.set(cfg.screen_enabled());
+    let (c, s, st) = (cfg.clone(), store.clone(), state.clone());
+    thread::spawn(move || activity::run(&c, &s, &st));
+    let (c, st) = (cfg.clone(), state.clone());
+    thread::spawn(move || dictate::run(c, st));
+    let (c, s, st) = (cfg.clone(), store.clone(), state.clone());
     thread::spawn(move || {
-        if let Err(e) = watch_loop(&c, &s) {
+        if let Err(e) = watch_loop(&c, &s, &st) {
             eprintln!("{e:#}");
             std::process::exit(1);
         }
     });
-    ui::run(cfg.clone(), store.clone())
+    ui::run(cfg.clone(), store.clone(), state.clone())
 }
 
-fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
+fn watch_loop(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> {
     // A call the user stopped or ignored stays ignored until its app releases the mic.
     let mut snoozed: Option<String> = None;
     let mut announced: Option<String> = None;
@@ -164,11 +168,11 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
             snoozed = None;
         }
         let mut call = users.into_iter().find(|u| snoozed.as_ref() != Some(u));
-        if ui::IGNORE.swap(false, Ordering::Relaxed) {
+        if state.ignore.take() {
             snoozed = call.take();
         }
-        let start = ui::START.swap(false, Ordering::Relaxed);
-        let auto = ui::AUTO.load(Ordering::Relaxed);
+        let start = state.start.take();
+        let auto = state.auto_record.is_set();
         // Manual mode (default): a detected call only asks; recording needs a click.
         let pending = if auto || start { None } else { call.clone() };
         if pending.is_some() && pending != announced {
@@ -178,17 +182,17 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
             );
         }
         announced = pending.clone();
-        *ui::PENDING.lock().unwrap() = pending;
+        state.pending.set(pending);
         if start || (auto && call.is_some()) {
             // Recording a detected call (clicked or auto) ends with the call; otherwise it runs until stopped.
             let app = call;
             let label = app.clone().unwrap_or_else(|| "manual".into());
             eprintln!("recording: {label}");
-            ui::STOP.store(false, Ordering::Relaxed);
-            *ui::RECORDING.lock().unwrap() = Some((label, Instant::now()));
+            state.stop.set(false);
+            state.recording.set(Some((label, Instant::now())));
             let mut idle_since: Option<Instant> = None;
-            let rec = session::record(cfg, store, store::UNTITLED, app.clone(), || {
-                if ui::STOP.swap(false, Ordering::Relaxed) {
+            let rec = session::record(cfg, store, state, store::UNTITLED, app.clone(), || {
+                if state.stop.take() {
                     snoozed = app.clone();
                     return true;
                 }
@@ -200,7 +204,7 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
                 }
                 idle_since.get_or_insert_with(Instant::now).elapsed() >= CALL_IDLE
             });
-            *ui::RECORDING.lock().unwrap() = None;
+            state.recording.set(None);
             // A failed recording must not take the menu bar app down with it.
             let rec = match rec {
                 Ok(rec) => rec,
@@ -213,14 +217,14 @@ fn watch_loop(cfg: &Config, store: &Store) -> Result<()> {
             };
             eprintln!("recording ended: {}", rec.meta.id);
             // Finish in the background so a back-to-back call is still caught.
-            let (cfg, store) = (cfg.clone(), store.clone());
+            let (cfg, store, st) = (cfg.clone(), store.clone(), state.clone());
             let id = rec.meta.id.clone();
-            ui::FINISHING.lock().unwrap().push(id.clone());
+            state.finishing.lock().push(id.clone());
             thread::spawn(move || {
                 if let Err(e) = rec.finish(&cfg, &store) {
                     eprintln!("finish: {e:#}");
                 }
-                ui::FINISHING.lock().unwrap().retain(|f| *f != id);
+                st.finishing.lock().retain(|f| *f != id);
             });
         }
         // Detecting a call 2 s later is fine and halves the CoreAudio queries.
@@ -391,8 +395,8 @@ fn log_to_file(cfg: &Config) {
     }
 }
 
-fn record(cfg: &Config, store: &Store, title: &str) -> Result<()> {
-    transcribe::ensure_models(cfg)?;
+fn record(cfg: &Config, store: &Store, state: &Arc<AppState>, title: &str) -> Result<()> {
+    transcribe::ensure_models(cfg, state)?;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     thread::spawn(move || {
@@ -400,7 +404,7 @@ fn record(cfg: &Config, store: &Store, title: &str) -> Result<()> {
         flag.store(true, Ordering::Relaxed);
     });
     eprintln!("press Enter to stop");
-    let rec = session::record(cfg, store, title, None, || stop.load(Ordering::Relaxed))?;
+    let rec = session::record(cfg, store, state, title, None, || stop.load(Ordering::Relaxed))?;
     eprintln!("stopped, finishing transcription ...");
     rec.finish(cfg, store)
 }

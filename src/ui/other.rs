@@ -252,9 +252,9 @@ impl Pill {
                 .with_ipc_handler(move |req| match req.body().as_str() {
                     "drag" => drop(proxy.send_event(UserEvent::Drag)),
                     // Each button only ever does its one thing, so a late second click can't undo the first.
-                    "record" => START.store(true, Ordering::Relaxed),
-                    "stop" => STOP.store(true, Ordering::Relaxed),
-                    "ignore" => IGNORE.store(true, Ordering::Relaxed),
+                    "record" => state().start.set(true),
+                    "stop" => state().stop.set(true),
+                    "ignore" => state().ignore.set(true),
                     "always" => set_auto(true),
                     _ => {}
                 }),
@@ -318,13 +318,13 @@ impl Hud {
     }
 
     fn update(&mut self) {
-        use crate::dictate::{OVERLAY, Overlay};
-        let mut now = OVERLAY.lock().unwrap().clone();
+        use crate::dictate::Overlay;
+        let mut now = state().overlay.lock().clone();
         if let Overlay::Said(_, until) = &now
             && Instant::now() >= *until
         {
             now = Overlay::Hidden;
-            *OVERLAY.lock().unwrap() = Overlay::Hidden;
+            *state().overlay.lock() = Overlay::Hidden;
         }
         if self.shown.as_ref() == Some(&now) {
             return;
@@ -352,8 +352,8 @@ impl Hud {
 }
 
 /// The tray app on the main thread. Never returns.
-pub fn run(cfg: Config, store: Store) -> ! {
-    set_store(&cfg, &store);
+pub fn run(cfg: Config, store: Store, shared: Arc<AppState>) -> ! {
+    set_store(&cfg, &store, &shared);
     watch_models(&cfg);
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -406,13 +406,13 @@ pub fn run(cfg: Config, store: Store) -> ! {
         while let Ok(e) = MenuEvent::receiver().try_recv() {
             match e.id.0.parse::<usize>().ok().and_then(|i| actions.get(i)) {
                 Some(Action::Toggle) => toggle_recording(),
-                Some(Action::Ignore) => IGNORE.store(true, Ordering::Relaxed),
-                Some(Action::Auto) => set_auto(!AUTO.load(Ordering::Relaxed)),
+                Some(Action::Ignore) => state().ignore.set(true),
+                Some(Action::Auto) => set_auto(!state().auto_record.is_set()),
                 Some(Action::Screen) => toggle_screen(),
                 Some(Action::Notes) => open_notes(target, &mut notes),
                 Some(Action::Dictation) => {
                     open_notes(target, &mut notes);
-                    SHOW_DICTATION.store(true, Ordering::Relaxed);
+                    state().show_dictation.set(true);
                 }
                 Some(Action::Open(path)) => open(path),
                 Some(Action::Pick(p)) => pick(p.clone()),
@@ -456,8 +456,8 @@ pub fn run(cfg: Config, store: Store) -> ! {
 }
 
 /// Just the notes window (`merkwerk notes`); exits when it closes.
-pub fn run_notes(cfg: Config, store: Store) -> ! {
-    set_store(&cfg, &store);
+pub fn run_notes(cfg: Config, store: Store, shared: Arc<AppState>) -> ! {
+    set_store(&cfg, &store, &shared);
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let mut notes: Option<Notes> = None;
     event_loop.run(move |event, target, flow| {
