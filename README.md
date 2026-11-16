@@ -183,8 +183,8 @@ Choices are saved in `~/merkwerk/settings.json`; the environment variables below
 Open the **Dictation** tab in the notes window (a banner points there until you set it up):
 
 1. Click **Record shortcut** and press the keys you want to hold, e.g. ⌃ ⌥ or Right ⌘. Modifier
-   keys only (fn, ⌃, ⌥, ⇧, ⌘, left or right), alone or together: a letter or Space would also be
-   typed into the app.
+   keys (fn, ⌃, ⌥, ⇧, ⌘, left or right) and F13–F20, alone or together: a letter or Space would also
+   be typed into the app. F13–F20 suit a macro pad or a Karabiner rule, e.g. a pad key sending ⌃F13.
 2. Allow Accessibility, so merkwerk can paste.
 3. Try it in the box on that page.
 

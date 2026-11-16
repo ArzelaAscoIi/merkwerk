@@ -4,14 +4,15 @@ use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::NSString;
 use std::{ffi::c_void, thread, time::Duration};
 pub const UNAVAILABLE: Option<&str> = None;
-pub const ONLY_MODIFIERS: &str = "Use only fn, ⌃, ⌥, ⇧ and ⌘: any other key would also be typed into the app.";
+pub const ONLY_MODIFIERS: &str = "Use only fn, ⌃, ⌥, ⇧, ⌘ and F13–F20: any other key would also be typed into the app.";
 
 /// Keys a dictation shortcut may use, in display order: macOS virtual key code and label.
-/// Modifiers only: holding them types nothing, so any other key press or click during the hold
-/// means a shortcut (⌘C, ⌥-letter, ⌘-click) and cancels the dictation.
+/// Modifiers and F13–F20 (no Mac keyboard has them; remappers such as Karabiner send them, e.g.
+/// ⌃F13 from a macro pad): holding them types nothing, so any other key press or click during the
+/// hold means a shortcut (⌘C, ⌥-letter, ⌘-click) and cancels the dictation.
 // ponytail: a letter or Space in the shortcut would also be typed into the app; allowing those
 // needs a CGEventTap that swallows them.
-pub const MODIFIERS: [(u16, &str); 9] = [
+pub const KEYS: [(u16, &str); 17] = [
     (63, "fn"),
     (59, "⌃"),
     (62, "Right ⌃"),
@@ -21,6 +22,14 @@ pub const MODIFIERS: [(u16, &str); 9] = [
     (60, "Right ⇧"),
     (55, "⌘"),
     (54, "Right ⌘"),
+    (105, "F13"),
+    (107, "F14"),
+    (113, "F15"),
+    (106, "F16"),
+    (64, "F17"),
+    (79, "F18"),
+    (80, "F19"),
+    (90, "F20"),
 ];
 
 /// Names for `MERKWERK_DICTATE` and settings from before shortcuts were recorded, e.g. "right_command"
@@ -36,7 +45,7 @@ pub fn named(name: &str) -> Option<u16> {
         "right_shift" => 60,
         "command" | "cmd" => 55,
         "right_command" => 54,
-        _ => return None,
+        f => return KEYS.iter().find(|k| k.1.eq_ignore_ascii_case(f)).map(|k| k.0),
     })
 }
 
@@ -57,9 +66,17 @@ pub fn down(key: u16) -> bool {
     unsafe { CGEventSourceKeyState(HID, key) }
 }
 
-/// Key downs and mouse clicks so far; a change during a hold means it was a shortcut or ⌘-click.
-pub fn presses() -> u32 {
-    unsafe { CGEventSourceCounterForEventType(HID, 10) + CGEventSourceCounterForEventType(HID, 1) }
+/// Clicks so far plus the keys held now, leaving out modifiers and the shortcut's own keys; a
+/// change during a hold means it was a shortcut or ⌘-click. Not the key-down counter: a held F13
+/// auto-repeats, and each repeat would count as a new press.
+// ponytail: a key tapped between two 10 ms polls goes unseen; an event tap if it matters.
+pub fn presses(shortcut: &[u16]) -> u32 {
+    let modifier = |k: u16| (54..=63).contains(&k);
+    let keys: u32 = (0u16..128)
+        .filter(|k| !modifier(*k) && !shortcut.contains(k) && down(*k))
+        .map(|k| u32::from(k) + 1)
+        .sum();
+    unsafe { CGEventSourceCounterForEventType(HID, 1) }.wrapping_add(keys)
 }
 
 /// Pastes through the clipboard (⌘V), then puts the previous text back. False without Accessibility.
