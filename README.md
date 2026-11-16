@@ -204,7 +204,10 @@ Calls are transcribed in 30-second chunks, so they trail the conversation by up 
 The notes window opens at launch and with a click on the Dock icon. The **Meetings** tab lists
 meetings by day, the **Activity** tab the daily work logs, with today's activity visible while it
 is recorded. The raw transcript (or the raw window sessions of a work log) sits behind the toggle.
-Click a title to rename a meeting, `+` to tag it, the trash icon to move it to the Trash. Keys:
+Click a title to rename a meeting, `+` to tag it, the trash icon to move it to the Trash. Tag a
+meeting `sensitive` to keep it private: AI tools reading it over MCP are told to use it only to answer
+you and never to share it (no Slack posts, emails, tickets or docs from it), and work logs list it by
+title only. This is an instruction to the AI tool, not encryption. Keys:
 `↑` `↓` move, `t` toggles the raw view, `/` searches.
 
 **Asking**

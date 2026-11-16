@@ -175,6 +175,7 @@
     display: inline-flex; align-items: center; gap: 2px; font: 12px var(--sans); color: var(--text);
     border: 1px solid var(--edge); border-radius: 4px; padding: 0 2px 0 8px;
   }
+  .tag.sensitive { color: var(--rec); border-color: var(--rec); }
   .tag button, .tags .add {
     font: inherit; color: var(--muted); background: none; border: 0; cursor: default;
     width: 20px; height: 20px; padding: 0; line-height: 20px;
@@ -507,7 +508,8 @@ function tagRow(m) {
   const row = el("div", "tags");
   row.setAttribute("aria-label", "Tags");
   for (const t of m.tags) {
-    const chip = el("span", "tag", t);
+    const chip = el("span", t.toLowerCase() === "sensitive" ? "tag sensitive" : "tag", t);
+    if (chip.classList.contains("sensitive")) chip.title = "AI tools reading this meeting are told never to share it";
     const x = el("button", null, "×");
     x.setAttribute("aria-label", `Remove tag ${t}`);
     x.onclick = () => saveTags(m, m.tags.filter(o => o !== t));
@@ -524,7 +526,7 @@ function tagRow(m) {
   }
   const input = el("input");
   input.id = "tag-input";
-  input.placeholder = "Tag";
+  input.placeholder = "Tag, e.g. sensitive";
   input.setAttribute("aria-label", "New tag");
   input.value = tagDraft;
   input.oninput = () => { tagDraft = input.value; };

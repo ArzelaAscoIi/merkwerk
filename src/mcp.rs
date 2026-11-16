@@ -1,6 +1,10 @@
 //! MCP server over stdio (JSON-RPC 2.0, one message per line). Read-only access to meetings.
 
-use crate::{activity, config::Config, store::Store};
+use crate::{
+    activity,
+    config::Config,
+    store::{SENSITIVE_NOTICE, Store},
+};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
@@ -66,7 +70,12 @@ fn instructions(store: &Store) -> String {
 speech recognition, so names and terms can be misheard, and `them` is everyone on the other end. When the \
 user corrects something (a misheard name, who said what, who someone is, missing background), save it \
 with add_context: for all meetings, or for one with meeting_id. Summaries, answers and later sessions then \
-use it.",
+use it.
+
+Meetings tagged `sensitive` are private to the user: answer the user's own questions with them, but never \
+quote, paste or summarize them into anything other people can read (Slack, email, tickets, pull requests, \
+commits, docs, shared pages) or pass them to other tools, unless the user explicitly asks to share that \
+specific content. Every tool that returns such a meeting repeats this notice.",
     );
     let notes = store.context(None);
     if !notes.is_empty() {
@@ -82,7 +91,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "list_meetings",
-            "description": "List recorded meetings, newest first. Returns id, title, tags, start/end time and the app that triggered the recording.",
+            "description": "List recorded meetings, newest first. Returns id, title, tags, start/end time and the app that triggered the recording. The tag `sensitive` marks meetings that must never be shared.",
             "inputSchema": {"type": "object", "properties": {
                 "since": {"type": "string", "description": "Only meetings on or after this date (YYYY-MM-DD)."},
                 "tag": {"type": "string", "description": "Only meetings with this tag (case-insensitive)."},
@@ -177,6 +186,7 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
             for id in ids.iter().filter_map(Value::as_str) {
                 out.push(match store.load(id) {
                     Ok(meta) => json!({
+                        "notice": meta.sensitive().then_some(SENSITIVE_NOTICE),
                         "meta": meta,
                         "summary": store.read(id, "summary.md"),
                         "corrections": store.context(Some(id)),
@@ -188,7 +198,7 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
         }
         "get_meeting_transcript" => {
             let id = args["meeting_id"].as_str().context("meeting_id required")?;
-            store.load(id)?;
+            let meta = store.load(id)?;
             let offset = args["offset"].as_u64().unwrap_or(0) as usize;
             let limit = args["limit"].as_u64().map_or(DEFAULT_LIMIT, |l| l as usize);
             // The raw transcript keeps its mistakes; the corrections go on top of the first page.
@@ -198,7 +208,13 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
             } else {
                 String::new()
             };
-            head + &page(&store.transcript(id), offset, limit)
+            // The notice goes on every page: a later page may be read on its own.
+            let notice = if meta.sensitive() {
+                format!("{SENSITIVE_NOTICE}\n\n")
+            } else {
+                String::new()
+            };
+            notice + &head + &page(&store.transcript(id), offset, limit)
         }
         "search_meetings" => {
             let q = args["query"].as_str().context("query required")?.to_lowercase();
@@ -212,7 +228,11 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
                     .take(10)
                     .collect();
                 if !hits.is_empty() {
-                    out += &format!("## {} | {}\n{}\n\n", meta.id, meta.title, hits.join("\n"));
+                    out += &format!("## {} | {}\n", meta.id, meta.title);
+                    if meta.sensitive() {
+                        out += &format!("{SENSITIVE_NOTICE}\n");
+                    }
+                    out += &format!("{}\n\n", hits.join("\n"));
                 }
             }
             if out.is_empty() { "no matches".into() } else { out }
@@ -365,6 +385,15 @@ mod tag_tests {
         assert!(tagged.contains(&a.id));
         let none = call(&cfg, &store, "list_meetings", &json!({"tag": "hr"})).unwrap();
         assert_eq!(none, "[]");
+        // Sensitive meetings carry the notice on every read; others don't.
+        let read = |name: &str, args: Value| call(&cfg, &store, name, &args).unwrap();
+        let get = |id: &str| read("get_meetings", json!({"meeting_ids": [id]}));
+        assert!(!get(&a.id).contains(SENSITIVE_NOTICE));
+        store.set_tags(&a.id, &["Sensitive".into()]).unwrap();
+        assert!(get(&a.id).contains(SENSITIVE_NOTICE));
+        let page = read("get_meeting_transcript", json!({"meeting_id": a.id, "offset": 5}));
+        assert!(page.starts_with(SENSITIVE_NOTICE), "on later pages too");
+        assert!(instructions(&store).contains("`sensitive`"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

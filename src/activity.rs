@@ -395,7 +395,12 @@ pub fn write_work_log(cfg: &Config, store: &Store, day: NaiveDate) -> Result<Str
     let prefix = day.format("%Y-%m-%d").to_string();
     for m in store.list().iter().filter(|m| m.id.starts_with(&prefix)) {
         input += &format!("\n## Meeting {} ({})\n", m.title, m.id.get(11..15).unwrap_or(""));
-        input += &store.read(&m.id, "summary.md").unwrap_or_default();
+        // Work logs get pasted into status updates; a sensitive meeting shows up by title only.
+        if m.sensitive() {
+            input += "Sensitive meeting: list it by title only, nothing about its content.\n";
+        } else {
+            input += &store.read(&m.id, "summary.md").unwrap_or_default();
+        }
     }
     let log = summarize::chat(
         cfg,

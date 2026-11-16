@@ -6,6 +6,15 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, io::Write, path::PathBuf};
 
+/// Tag that marks a meeting as sensitive: MCP clients are told never to share it.
+pub const SENSITIVE: &str = "sensitive";
+
+/// Told to MCP clients with every sensitive meeting they read.
+pub const SENSITIVE_NOTICE: &str = "SENSITIVE: the user marked this meeting sensitive. Use it only to \
+answer the user directly. Never quote, paste or summarize it into anything other people can read (Slack, \
+email, tickets, pull requests, commits, docs, shared pages), and never pass it to other tools or services, \
+unless the user explicitly asks to share this specific content.";
+
 /// Placeholder title; replaced by the title from the generated notes.
 pub const UNTITLED: &str = "Untitled";
 
@@ -28,6 +37,10 @@ pub struct Meta {
 impl Meta {
     pub fn has_tag(&self, tag: &str) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case(tag.trim()))
+    }
+
+    pub fn sensitive(&self) -> bool {
+        self.has_tag(SENSITIVE)
     }
 }
 
