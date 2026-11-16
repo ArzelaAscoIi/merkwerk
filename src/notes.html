@@ -756,7 +756,7 @@ function renderDictation() {
   }
   const keyHelp = dictation.error
     ? el("p", "err", dictation.error)
-    : el("p", null, "Use modifier keys: fn, ⌃, ⌥, ⇧, ⌘, alone or together (e.g. ⌃ ⌥ or Right ⌘). " +
+    : el("p", null, "Use modifier keys (fn, ⌃, ⌥, ⇧, ⌘) and F13–F20, alone or together (e.g. ⌃ ⌥, Right ⌘ or ⌃ F13). " +
         "Pressing another key while holding cancels, so shortcuts keep working. " +
         "With fn, set System Settings → Keyboard → “Press 🌐 key to” to “Do Nothing”.");
   step("1", "Record the shortcut you hold to talk", keyRow, keyHelp);

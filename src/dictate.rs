@@ -2,7 +2,7 @@
 //! Same local speech model as meetings, mic only. Each dictation's text is kept in
 //! `$MERKWERK_DIR/dictations.jsonl` for the history in the notes window; no audio is saved.
 
-use crate::platform::keys::{self as sys, MODIFIERS, down, named, presses};
+use crate::platform::keys::{self as sys, KEYS, down, named, presses};
 use crate::state::AppState;
 use crate::{
     audio::{self, Source},
@@ -27,8 +27,7 @@ pub enum Capture {
 
 /// "⌃ ⌥", "Right ⌘"; empty for no shortcut.
 pub fn label(keys: &[u16]) -> String {
-    MODIFIERS
-        .iter()
+    KEYS.iter()
         .filter(|(code, _)| keys.contains(code))
         .map(|(_, l)| *l)
         .collect::<Vec<_>>()
@@ -47,7 +46,7 @@ pub fn configured(cfg: &Config) -> Vec<u16> {
             .iter()
             .filter_map(|c| c.as_u64())
             .map(|c| c as u16)
-            .filter(|c| MODIFIERS.iter().any(|m| m.0 == *c))
+            .filter(|c| KEYS.iter().any(|m| m.0 == *c))
             .collect(),
         Some(serde_json::Value::String(s)) => names(&s),
         _ => vec![],
@@ -60,22 +59,23 @@ pub fn set_shortcut(cfg: &Config, state: &AppState, keys: Vec<u16>) {
     state.shortcut.set(keys);
 }
 
-/// Waits for the user to press and release a combination of modifier keys and saves it.
+/// Waits for the user to press and release a combination of allowed keys and saves it.
 fn capture(cfg: &Config, state: &AppState) {
     if let Some(why) = sys::UNAVAILABLE {
         *state.capture.lock() = Capture::Failed(why.into());
         return;
     }
-    let before = presses();
+    let allowed: Vec<u16> = KEYS.iter().map(|k| k.0).collect();
+    let before = presses(&allowed);
     let start = Instant::now();
     let mut seen: Vec<u16> = vec![];
     while *state.capture.lock() == Capture::Listening {
         thread::sleep(Duration::from_millis(10));
-        if presses() != before {
+        if presses(&allowed) != before {
             *state.capture.lock() = Capture::Failed(sys::ONLY_MODIFIERS.into());
             return;
         }
-        let held: Vec<u16> = MODIFIERS.iter().map(|m| m.0).filter(|k| down(*k)).collect();
+        let held: Vec<u16> = allowed.iter().copied().filter(|k| down(*k)).collect();
         for k in &held {
             if !seen.contains(k) {
                 seen.push(*k);
@@ -151,10 +151,11 @@ pub fn run(cfg: Config, state: Arc<AppState>) {
         if !held(&keys) {
             continue;
         }
-        let before = presses();
+        let before = presses(&keys);
         let start = Instant::now();
-        wait(|| held(&keys) && start.elapsed() < HOLD);
-        if !held(&keys) || presses() != before {
+        // Polls for other keys too: they are only seen while held, and ⌘C is over within 250 ms.
+        wait(|| held(&keys) && start.elapsed() < HOLD && presses(&keys) == before);
+        if !held(&keys) || presses(&keys) != before {
             wait(|| held(&keys));
             continue;
         }
@@ -169,9 +170,9 @@ pub fn run(cfg: Config, state: Arc<AppState>) {
             }
         };
         show(&state, Overlay::Listening);
-        wait(|| held(&keys) && presses() == before);
+        wait(|| held(&keys) && presses(&keys) == before);
         drop(stream);
-        if presses() != before {
+        if presses(&keys) != before {
             show(&state, Overlay::Hidden);
             wait(|| held(&keys));
             continue;
@@ -288,6 +289,8 @@ mod tests {
         let names = |s: &str| s.split('+').filter_map(super::named).collect::<Vec<_>>();
         assert_eq!(names("control+option"), [59, 58]);
         assert_eq!(names("right_command"), [54]);
+        assert_eq!(names("control+f13"), [59, 105]);
+        assert_eq!(super::label(&[105, 59]), "⌃ F13");
         assert!(names("off").is_empty());
         assert_eq!(super::join([" Hallo ", "", "world."].into_iter()), "Hallo world.");
     }
