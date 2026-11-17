@@ -72,7 +72,8 @@ user corrects something (a misheard name, who said what, who someone is, missing
 with add_context: for all meetings, or for one with meeting_id. Summaries, answers and later sessions then \
 use it.
 
-Meetings tagged `sensitive` are private to the user: answer the user's own questions with them, but never \
+Meetings tagged `sensitive` are private to the user: answer the user's questions about that meeting with them, \
+never bring them up, hint at them or reason from them when answering about anything else, and never \
 quote, paste or summarize them into anything other people can read (Slack, email, tickets, pull requests, \
 commits, docs, shared pages) or pass them to other tools, unless the user explicitly asks to share that \
 specific content. Every tool that returns such a meeting repeats this notice.",
@@ -220,7 +221,14 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
             let q = args["query"].as_str().context("query required")?.to_lowercase();
             let mut out = String::new();
             let tag = args["tag"].as_str();
-            for meta in store.list().into_iter().filter(|m| tag.is_none_or(|t| m.has_tag(t))) {
+            // Topic searches would pull sensitive meetings into unrelated answers: only a search
+            // filtered on the tag itself reaches them.
+            let asked = tag.is_some_and(|t| t.trim().eq_ignore_ascii_case(crate::store::SENSITIVE));
+            for meta in store
+                .list()
+                .into_iter()
+                .filter(|m| tag.is_none_or(|t| m.has_tag(t)) && (asked || !m.sensitive()))
+            {
                 let text = store.read(&meta.id, "summary.md").unwrap_or_default() + &store.transcript(&meta.id);
                 let hits: Vec<&str> = text
                     .lines()
@@ -394,6 +402,11 @@ mod tag_tests {
         let page = read("get_meeting_transcript", json!({"meeting_id": a.id, "offset": 5}));
         assert!(page.starts_with(SENSITIVE_NOTICE), "on later pages too");
         assert!(instructions(&store).contains("`sensitive`"));
+        // Search skips sensitive meetings unless it filters on the tag.
+        store.write(&a.id, "summary.md", "- needle\n").unwrap();
+        assert_eq!(read("search_meetings", json!({"query": "needle"})), "no matches");
+        let hit = read("search_meetings", json!({"query": "needle", "tag": "Sensitive"}));
+        assert!(hit.contains(SENSITIVE_NOTICE) && hit.contains("needle"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }
