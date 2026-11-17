@@ -11,7 +11,8 @@ pub const SENSITIVE: &str = "sensitive";
 
 /// Told to MCP clients with every sensitive meeting they read.
 pub const SENSITIVE_NOTICE: &str = "SENSITIVE: the user marked this meeting sensitive. Use it only to \
-answer the user directly. Never quote, paste or summarize it into anything other people can read (Slack, \
+answer the user's questions about this meeting. Never bring it up, hint at it or reason from it when \
+answering about anything else, and never quote, paste or summarize it into anything other people can read (Slack, \
 email, tickets, pull requests, commits, docs, shared pages), and never pass it to other tools or services, \
 unless the user explicitly asks to share this specific content.";
 
