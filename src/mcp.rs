@@ -1,9 +1,10 @@
-//! MCP server over stdio (JSON-RPC 2.0, one message per line). Read-only access to meetings.
+//! MCP server over stdio (JSON-RPC 2.0, one message per line). Reads meetings; writes only
+//! corrections (add_context, remove_context) and tags (tag_meeting).
 
 use crate::{
     activity,
     config::Config,
-    store::{SENSITIVE_NOTICE, Store},
+    store::{SENSITIVE, SENSITIVE_NOTICE, Store},
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -157,6 +158,15 @@ fn tools() -> Value {
             }},
         },
         {
+            "name": "tag_meeting",
+            "description": "Add or remove tags on a meeting, keeping its other tags: a customer or project tag, or a marker that another tool has processed the meeting. Returns the meeting's tags. `sensitive` can be added but not removed here; only the user removes it, in the notes window.",
+            "inputSchema": {"type": "object", "required": ["meeting_id"], "properties": {
+                "meeting_id": {"type": "string"},
+                "add": {"type": "array", "items": {"type": "string"}, "description": "Tags to add."},
+                "remove": {"type": "array", "items": {"type": "string"}, "description": "Tags to remove (case-insensitive)."},
+            }},
+        },
+        {
             "name": "search_meetings",
             "description": "Case-insensitive text search across all transcripts and summaries. Returns matching lines per meeting.",
             "inputSchema": {"type": "object", "required": ["query"], "properties": {
@@ -281,6 +291,34 @@ fn call(cfg: &Config, store: &Store, name: &str, args: &Value) -> Result<String>
                 bail!("no saved correction with exactly that text")
             }
         }
+        "tag_meeting" => {
+            let id = args["meeting_id"].as_str().context("meeting_id required")?;
+            let tags = |key: &str| -> Vec<String> {
+                args[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| Some(t.as_str()?.trim().to_string()))
+                    .filter(|t| !t.is_empty())
+                    .collect()
+            };
+            let (add, remove) = (tags("add"), tags("remove"));
+            anyhow::ensure!(!add.is_empty() || !remove.is_empty(), "add or remove a tag");
+            // Lifting the privacy marker stays with the user, never an MCP client.
+            anyhow::ensure!(
+                !remove.iter().any(|t| t.eq_ignore_ascii_case(SENSITIVE)),
+                "`{SENSITIVE}` is removed only by the user, in the notes window"
+            );
+            let mut kept: Vec<String> = store
+                .load_editable(id)?
+                .tags
+                .into_iter()
+                .filter(|t| !remove.iter().any(|r| r.eq_ignore_ascii_case(t)))
+                .collect();
+            kept.extend(add);
+            let meta = store.set_tags(id, &kept)?;
+            serde_json::to_string(&json!({"id": id, "tags": meta.tags}))?
+        }
         "get_activity" => {
             let excerpt = args["excerpt_chars"].as_u64().unwrap_or(200) as usize;
             activity::digest(cfg, date(args)?, excerpt)
@@ -359,7 +397,7 @@ mod tests {
             &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
         )
         .unwrap();
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 9);
+        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 10);
     }
 }
 
@@ -407,6 +445,40 @@ mod tag_tests {
         assert_eq!(read("search_meetings", json!({"query": "needle"})), "no matches");
         let hit = read("search_meetings", json!({"query": "needle", "tag": "Sensitive"}));
         assert!(hit.contains(SENSITIVE_NOTICE) && hit.contains("needle"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tag_meeting_tests {
+    use super::*;
+
+    #[test]
+    fn tag_meeting_adds_and_removes_but_never_lifts_sensitive() {
+        let root = std::env::temp_dir().join(format!("merkwerk-tag-meeting-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store { root: root.clone() };
+        let cfg = Config::from_env();
+        let m = store.create("Kickoff", None).unwrap();
+        store.set_tags(&m.id, &["acme".into()]).unwrap();
+        let tag = |args: Value| call(&cfg, &store, "tag_meeting", &args);
+        // Added next to the tags it had; a repeat in another case is kept once.
+        let out = tag(json!({"meeting_id": m.id, "add": ["processed", "ACME"]})).unwrap();
+        assert_eq!(store.load(&m.id).unwrap().tags, ["acme", "processed"]);
+        assert!(out.contains("\"processed\""));
+        tag(json!({"meeting_id": m.id, "remove": ["PROCESSED"]})).unwrap();
+        assert_eq!(store.load(&m.id).unwrap().tags, ["acme"]);
+        // Listing by the marker finds it.
+        tag(json!({"meeting_id": m.id, "add": ["processed"]})).unwrap();
+        let listed = call(&cfg, &store, "list_meetings", &json!({"tag": "processed"})).unwrap();
+        assert!(listed.contains(&m.id));
+        // `sensitive`: added, never removed over MCP.
+        tag(json!({"meeting_id": m.id, "add": ["sensitive"]})).unwrap();
+        assert!(tag(json!({"meeting_id": m.id, "remove": ["Sensitive"]})).is_err());
+        assert!(store.load(&m.id).unwrap().sensitive());
+        // Nothing to do, or a path for an id: refused.
+        assert!(tag(json!({"meeting_id": m.id})).is_err());
+        assert!(tag(json!({"meeting_id": "../x", "add": ["a"]})).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
