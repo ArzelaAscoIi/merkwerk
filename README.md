@@ -258,6 +258,7 @@ claude mcp add merkwerk -- merkwerk mcp
 | `search_activity` | everything you had on screen, by keyword |
 | `add_context` | saves a correction ("Jon is Jonne", "them in this call is Anna"): for all meetings or one; optionally rewrites that meeting's notes now |
 | `remove_context` | deletes a saved correction |
+| `tag_meeting` | adds or removes a meeting's tags, keeping the others (e.g. mark it processed by another tool); `sensitive` is never removed this way |
 
 Tell your agent what merkwerk got wrong and it saves it with `add_context`. Corrections go into every
 later summary, chat answer and work log, and the global ones are handed to each new MCP session. They
