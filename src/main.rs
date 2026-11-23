@@ -140,7 +140,6 @@ fn watch(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> {
     // it finishes keep their audio (`merkwerk transcribe <id>` later).
     models::download_in_background(cfg.clone(), state.clone());
     eprintln!("watching for calls, meetings go to {}", cfg.root.display());
-    state.auto_record.set(config::auto_record(&cfg.root));
     state.screen.set(cfg.screen_enabled());
     let (c, s, st) = (cfg.clone(), store.clone(), state.clone());
     thread::spawn(move || activity::run(&c, &s, &st));
@@ -170,19 +169,18 @@ fn watch_loop(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> 
             snoozed = call.take();
         }
         let start = state.start.take();
-        let auto = state.auto_record.is_set();
-        // Manual mode (default): a detected call only asks; recording needs a click.
-        let pending = if auto || start { None } else { call.clone() };
+        // A detected call only asks; recording needs a click, so nobody is recorded by surprise.
+        let pending = if start { None } else { call.clone() };
         if pending.is_some() && pending != announced {
             eprintln!(
-                "call detected: {} (manual mode: click Record to record it)",
+                "call detected: {} (click Record to record it)",
                 call.as_deref().unwrap_or("")
             );
         }
         announced = pending.clone();
         state.pending.set(pending);
-        if start || (auto && call.is_some()) {
-            // Recording a detected call (clicked or auto) ends with the call; otherwise it runs until stopped.
+        if start {
+            // Recording a detected call (clicked) ends with the call; otherwise it runs until stopped.
             let app = call;
             let label = app.clone().unwrap_or_else(|| "manual".into());
             eprintln!("recording: {label}");

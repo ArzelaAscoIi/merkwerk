@@ -175,10 +175,6 @@ pub fn set_setting(root: &std::path::Path, key: &str, value: serde_json::Value) 
     std::fs::write(path, serde_json::to_string_pretty(&all)?)
 }
 
-pub fn auto_record(root: &std::path::Path) -> bool {
-    setting(root, "auto_record").and_then(|v| v.as_bool()).unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,14 +182,14 @@ mod tests {
     #[test]
     fn menu_choice_overrides_default_and_merges_settings() {
         let root = std::env::temp_dir().join(format!("merkwerk-test-{}", std::process::id()));
-        set_setting(&root, "auto_record", true.into()).unwrap();
+        set_setting(&root, "screen", false.into()).unwrap();
         set_setting(&root, "llm_model", "gemma4:26b".into()).unwrap();
         assert_eq!(
             chosen(&root, "MERKWERK_TEST_UNSET", "llm_model", "gemma4"),
             "gemma4:26b"
         );
         assert_eq!(chosen(&root, "MERKWERK_TEST_UNSET", "engine", "parakeet"), "parakeet");
-        assert!(auto_record(&root), "earlier keys survive later writes");
+        assert_eq!(setting(&root, "screen"), Some(false.into()), "earlier keys survive later writes");
         let _ = std::fs::remove_dir_all(root);
     }
 

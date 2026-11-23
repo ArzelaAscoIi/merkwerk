@@ -26,7 +26,6 @@ enum UserEvent {
 enum Action {
     Toggle,
     Ignore,
-    Auto,
     Screen,
     Notes,
     Dictation,
@@ -203,13 +202,6 @@ fn menu(rows: &[Row]) -> (Menu, Vec<Action>) {
             Row::Notes => add(&MenuItem::with_id(id(Action::Notes), "Open notes", true, None)),
             Row::Dictation(label) => add(&MenuItem::with_id(id(Action::Dictation), label, true, None)),
             Row::Open(label, path) => add(&MenuItem::with_id(id(Action::Open(path.clone())), label, true, None)),
-            Row::Auto(on) => add(&CheckMenuItem::with_id(
-                id(Action::Auto),
-                "Auto-record calls",
-                true,
-                *on,
-                None,
-            )),
             Row::Screen(on) => add(&CheckMenuItem::with_id(
                 id(Action::Screen),
                 "Record screen activity",
@@ -255,7 +247,6 @@ impl Pill {
                     "record" => state().start.set(true),
                     "stop" => state().stop.set(true),
                     "ignore" => state().ignore.set(true),
-                    "always" => set_auto(true),
                     _ => {}
                 }),
         );
@@ -278,7 +269,7 @@ impl Pill {
             PillState::Pending(app) => Some(serde_json::json!({
                 "label": format!("Call  {app}"),
                 "color": "#ff9f0a",
-                "buttons": [["Always", "always", false], ["Ignore", "ignore", false], ["Record", "record", true]],
+                "buttons": [["Ignore", "ignore", false], ["Record", "record", true]],
             })),
         }
         .map(|s| s.to_string());
@@ -407,7 +398,6 @@ pub fn run(cfg: Config, store: Store, shared: Arc<AppState>) -> ! {
             match e.id.0.parse::<usize>().ok().and_then(|i| actions.get(i)) {
                 Some(Action::Toggle) => toggle_recording(),
                 Some(Action::Ignore) => state().ignore.set(true),
-                Some(Action::Auto) => set_auto(!state().auto_record.is_set()),
                 Some(Action::Screen) => toggle_screen(),
                 Some(Action::Notes) => open_notes(target, &mut notes),
                 Some(Action::Dictation) => {
