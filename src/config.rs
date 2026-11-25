@@ -189,7 +189,11 @@ mod tests {
             "gemma4:26b"
         );
         assert_eq!(chosen(&root, "MERKWERK_TEST_UNSET", "engine", "parakeet"), "parakeet");
-        assert_eq!(setting(&root, "screen"), Some(false.into()), "earlier keys survive later writes");
+        assert_eq!(
+            setting(&root, "screen"),
+            Some(false.into()),
+            "earlier keys survive later writes"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

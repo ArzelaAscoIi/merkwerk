@@ -201,6 +201,8 @@ fn watch_loop(cfg: &Config, store: &Store, state: &Arc<AppState>) -> Result<()> 
                 idle_since.get_or_insert_with(Instant::now).elapsed() >= CALL_IDLE
             });
             state.recording.set(None);
+            // A Record click made while recording must not start another recording without a fresh click.
+            state.start.set(false);
             // A failed recording must not take the menu bar app down with it.
             let rec = match rec {
                 Ok(rec) => rec,
