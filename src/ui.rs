@@ -97,15 +97,6 @@ fn set_recorded(cfg: &Config, app: String, record: bool) {
     }
 }
 
-/// Keeps SERVER_MODELS current (every 10 s) from the notes server's `/v1/models`.
-/// Auto-record on or off, saved to settings.json.
-fn set_auto(on: bool) {
-    state().auto_record.set(on);
-    if let Some((cfg, _)) = store() {
-        let _ = crate::config::set_setting(&cfg.root, "auto_record", on.into());
-    }
-}
-
 /// Writes a meeting's notes again in the background (the Write notes button), like after a recording.
 fn write_notes(cfg: Config, store: Store, id: String) {
     let mut finishing = state().finishing.lock();
@@ -191,7 +182,6 @@ enum Row {
     /// "Never record <app>": adds the app to settings.json `ignore`.
     Never(String),
     Ignore,
-    Auto(bool),
     Screen(bool),
     Notes,
     /// Opens the notes window on the Dictation tab.
@@ -210,12 +200,10 @@ fn screen_blocked() -> bool {
 fn entries(store: &Store) -> Vec<Row> {
     let recording = state().recording.lock().clone();
     let pending = state().pending.lock().clone();
-    let auto = state().auto_record.is_set();
     let mut rows = vec![match (&recording, &pending) {
         (Some((app, _)), _) => Row::Label(format!("Recording: {app}")),
         (None, Some(app)) => Row::Label(format!("Call detected: {app}")),
-        (None, None) if auto => Row::Label("Watching for calls (auto-record)".into()),
-        (None, None) => Row::Label("Watching for calls (manual)".into()),
+        (None, None) => Row::Label("Watching for calls".into()),
     }];
     let finishing = state().finishing.lock().len();
     if finishing > 0 {
@@ -236,7 +224,6 @@ fn entries(store: &Store) -> Vec<Row> {
     if let Some(app) = app {
         rows.push(Row::Never(app));
     }
-    rows.push(Row::Auto(auto));
     rows.push(Row::Screen(state().screen.is_set()));
     if screen_blocked() {
         rows.push(Row::Open(

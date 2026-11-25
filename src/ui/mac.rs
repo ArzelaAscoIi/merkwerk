@@ -87,17 +87,6 @@ define_class!(
             toggle_screen();
         }
 
-        #[unsafe(method(auto:))]
-        fn auto(&self, _sender: &NSObject) {
-            set_auto(!state().auto_record.is_set());
-        }
-
-        /// The pill's Always: turns auto-record on, which also records the call it is shown for.
-        #[unsafe(method(always:))]
-        fn always(&self, _sender: &NSObject) {
-            set_auto(true);
-        }
-
         /// The pill's Stop: only ever stops, so a late second click can't start a new recording.
         #[unsafe(method(stop:))]
         fn stop(&self, _sender: &NSObject) {
@@ -317,15 +306,6 @@ fn menu(mtm: MainThreadMarker, handler: &Handler, rows: &[Row]) -> Retained<NSMe
                 item.setTag(picks.len() as isize);
                 picks.push(Pick::Never(app.clone()));
             }
-            Row::Auto(on) => {
-                let item = add("Auto-record calls", Some(sel!(auto:)), ns_string!(""));
-                unsafe { item.setTarget(Some(handler)) };
-                item.setState(if *on {
-                    NSControlStateValueOn
-                } else {
-                    NSControlStateValueOff
-                });
-            }
             Row::Dictation(label) => unsafe {
                 add(label, Some(sel!(dictation:)), ns_string!("")).setTarget(Some(handler))
             },
@@ -474,7 +454,6 @@ struct Pill {
     label: Retained<NSTextField>,
     primary: Retained<NSButton>,
     secondary: Retained<NSButton>,
-    always: Retained<NSButton>,
     /// The latest transcript lines, shown under the row while hovering a recording.
     said: Retained<NSView>,
     /// One (speaker, text) pair of labels per transcript line, oldest first.
@@ -606,9 +585,6 @@ impl Pill {
         // Record is the big one: it is what a detected call is shown for.
         let primary = button(sel!(record:), PILL_W - 100.0, 96.0, NSControlSize::Regular);
         let secondary = button(sel!(ignore:), PILL_W - 160.0, 56.0, NSControlSize::Small);
-        let always = button(sel!(always:), PILL_W - 220.0, 56.0, NSControlSize::Small);
-        always.setTitle(ns_string!("Always"));
-        always.setToolTip(Some(ns_string!("Record this call and every call from now on")));
         // Caption lines under the row: speaker in grey, then one line of text that keeps the
         // newest words visible.
         let said = NSView::initWithFrame(
@@ -644,7 +620,6 @@ impl Pill {
             label,
             primary,
             secondary,
-            always,
             said,
             lines,
             compact: Cell::new(false),
@@ -666,7 +641,10 @@ impl Pill {
             1.0
         };
         self.dot.setAlphaValue(alpha as f64);
-        if recording && self.panel.isVisible() {
+        // While the pill is dragged, WindowServer moves it and its frame here is stale: resizing now
+        // would snap it back and leave it offset from the mouse. Resize once the button is up.
+        let dragging = NSEvent::pressedMouseButtons() & 1 != 0;
+        if recording && self.panel.isVisible() && !dragging {
             let f = self.panel.frame();
             let m = NSEvent::mouseLocation();
             let inside = m.x >= f.origin.x
@@ -770,7 +748,6 @@ impl Pill {
         let action = if recording { sel!(stop:) } else { sel!(record:) };
         unsafe { self.primary.setAction(Some(action)) };
         self.secondary.setHidden(secondary.is_none());
-        self.always.setHidden(secondary.is_none());
         self.secondary.setTitle(&NSString::from_str(secondary.unwrap_or("")));
         *self.text.borrow_mut() = (short, full);
         self.set_label();

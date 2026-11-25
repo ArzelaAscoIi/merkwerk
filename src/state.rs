@@ -65,7 +65,6 @@ pub struct AppState {
     pub ignore: Flag,
 
     // Settings mirrored for the hot loops; persisted in settings.json.
-    pub auto_record: Flag,
     pub screen: Flag,
 
     // Watch loop to UI: what is going on.

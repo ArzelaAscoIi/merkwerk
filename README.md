@@ -43,7 +43,7 @@ no usage limits, no cloud.
 
 | | |
 |---|---|
-| **Recording on your terms** | Manual by default: when a call starts, merkwerk asks. Turn on auto-recording if you want every call captured, and opt out of any single call with one click. |
+| **Recording on your terms** | When a call starts, merkwerk asks. Nothing is recorded until you click **Record**, so nobody in a call is recorded by surprise. |
 | **Always visible, never in the way** | While recording, a small floating pill shows a breathing dot and the time on every desktop; hover it for the app and **Stop**, drag it wherever you like. The Dock icon carries a `REC` badge and the menu bar shows a timer. |
 | **Call detection** | Notices when Zoom, Meet, Teams, Slack, FaceTime or any other app starts using the microphone, without bots joining your call. |
 | **Both sides of the call** | Records your microphone as `me` and the system audio as `them`; in a 1:1 with a calendar invite, `them` carries the other person's name. |
@@ -152,15 +152,13 @@ model under **Notes model** in the menu.
 
 ## Using it
 
-**Recording modes**
+**Recording**
 
-- **Manual (default).** When another app starts using the microphone, the pill shows
-  `Call  Zoom  [Record] [Ignore]` and the Dock icon bounces once. Nothing is recorded
-  until you click **Record**. You can also start a recording anytime with **Start recording** in
-  the notes window or the menu (⌘R), for example for a conversation in person.
-- **Auto-record.** Enable **Auto-record calls** in the Dock or menu bar menu. Every detected call
-  is recorded; hover the pill and click **Stop** to opt out of that call. The choice is saved in
-  `~/merkwerk/settings.json`.
+When another app starts using the microphone, the pill shows `Call  Zoom  [Record] [Ignore]` and
+the Dock icon bounces once. Nothing is recorded until you click **Record**, on every call: there is
+no auto-record, so you decide each time whether everyone agreed. You can also start a recording
+anytime with **Start recording** in the notes window or the menu (⌘R), for example for a
+conversation in person.
 
 A recording of a call ends 15 seconds after the app releases the microphone. Notes are written in
 the background (the meeting shows "Writing notes…" until they are done), so a back-to-back call is
@@ -299,7 +297,7 @@ live as plain lists in `~/merkwerk/context.md` (all meetings) and `context.md` i
 
 ```
 ~/merkwerk/
-  settings.json                 recording mode, screen activity switch, model choices, ignored apps
+  settings.json                 screen activity switch, model choices, ignored apps
   vocab.txt                     optional: names and terms, one per line, for correct spelling in notes
   2026-10-16_100000/            one folder per meeting
     meta.json                   title, app, start, end, invitees, tags
@@ -398,7 +396,7 @@ affiliated with any of them.
 > rules, works council agreements or company policy.
 >
 > - Tell participants that you record and transcribe, and get their agreement **before** you start.
-> - Do not record calls where you cannot get consent. Use **Ignore** or turn auto-recording off.
+> - Do not record calls where you cannot get consent. Click **Ignore**.
 > - Screen activity can contain other people's messages and personal data. Treat the files
 >   accordingly and delete what you do not need.
 >
